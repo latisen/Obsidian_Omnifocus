@@ -1509,7 +1509,22 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     "end run"
   ].join("\n");
 
-  const output = await runAppleScriptCapture(script, ids);
+  let output: string;
+  try {
+    output = await runAppleScriptCapture(script, ids);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return ids.map((id) => ({
+      id,
+      completed: false,
+      plannedEpochSeconds: null,
+      dueEpochSeconds: null,
+      plannedDateText: `<<ERR:${detail}>>`,
+      dueDateText: `<<ERR:${detail}>>`,
+      missing: false
+    }));
+  }
+
   if (!output) {
     return [];
   }
