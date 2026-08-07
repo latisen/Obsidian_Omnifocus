@@ -39,6 +39,7 @@ npm run build
 Pluginet använder dessa kommandon:
 
 - `Sync unfinished tasks to OmniFocus Inbox`
+- `Run full vault sync (export + completion)`
 - `Clear exported task cache`
 - `Reset sync state and export all unfinished tasks`
 - `Sync completed state between Obsidian and OmniFocus`

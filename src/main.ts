@@ -83,6 +83,11 @@ interface CompletionSyncSummary {
   firstFailureMessage?: string;
 }
 
+interface FullSyncSummary {
+  exportSummary: SyncSummary;
+  completionSummary: CompletionSyncSummary;
+}
+
 interface OmniFocusPluginState {
   exportedTasks: Record<string, ExportRecord>;
 }
@@ -129,6 +134,15 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       callback: async () => {
         const syncSummary = await this.syncTasksToOmniFocus();
         new Notice(this.createSyncNotice(syncSummary), 9000);
+      }
+    });
+
+    this.addCommand({
+      id: "run-full-vault-sync",
+      name: "Run full vault sync (export + completion)",
+      callback: async () => {
+        const summary = await this.runFullVaultSync();
+        new Notice(this.createFullSyncNotice(summary), 12000);
       }
     });
 
@@ -593,6 +607,16 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     };
   }
 
+  async runFullVaultSync(): Promise<FullSyncSummary> {
+    const exportSummary = await this.syncTasksToOmniFocus();
+    const completionSummary = await this.syncCompletionStateBidirectional();
+
+    return {
+      exportSummary,
+      completionSummary
+    };
+  }
+
   async setObsidianTaskCompletion(task: ParsedObsidianTask, completed: boolean): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(task.sourcePath);
     if (!(file instanceof TFile)) {
@@ -624,6 +648,12 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     }
 
     return `Completion sync: compared ${summary.compared}, updated Obsidian ${summary.updatedInObsidian}, updated OmniFocus ${summary.updatedInOmniFocus}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}.`;
+  }
+
+  createFullSyncNotice(summary: FullSyncSummary): string {
+    const exportNotice = this.createSyncNotice(summary.exportSummary);
+    const completionNotice = this.createCompletionSyncNotice(summary.completionSummary);
+    return `Full sync complete. ${exportNotice} ${completionNotice}`;
   }
 
   createSyncNotice(summary: SyncSummary): string {
