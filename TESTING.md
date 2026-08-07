@@ -33,6 +33,7 @@ npm run build
 4. Aktivera `Obsidian OmniFocus`.
 5. Gå till pluginets settings.
 6. Låt `Dry run` vara påslaget för de första testerna.
+7. För schemalagd helsynk: sätt `Automatic full sync interval (minutes)` till t.ex. `10`.
 
 ## Testkommandon
 
@@ -44,6 +45,8 @@ Pluginet använder dessa kommandon:
 - `Reset sync state and export all unfinished tasks`
 - `Sync completed state between Obsidian and OmniFocus`
 - `Test OmniFocus AppleScript bridge`
+
+Observera: automatisk körning använder samma logik som `Run full vault sync (export + completion)`.
 
 Öppna Command Palette i Obsidian och kör kommandona därifrån.
 

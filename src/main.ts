@@ -96,6 +96,7 @@ interface OmniFocusPluginSettings {
   vaultName: string;
   excludedFolders: string;
   dryRun: boolean;
+  autoFullSyncIntervalMinutes: number;
 }
 
 interface StoredPluginData {
@@ -108,7 +109,8 @@ interface StoredPluginData {
 const DEFAULT_SETTINGS: OmniFocusPluginSettings = {
   vaultName: "",
   excludedFolders: "",
-  dryRun: true
+  dryRun: true,
+  autoFullSyncIntervalMinutes: 0
 };
 
 const DEFAULT_STATE: OmniFocusPluginState = {
@@ -124,6 +126,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   state: OmniFocusPluginState = {
     exportedTasks: {}
   };
+  autoFullSyncIntervalId: number | null = null;
+  autoFullSyncInProgress = false;
 
   override async onload(): Promise<void> {
     await this.loadPluginData();
@@ -184,6 +188,47 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     });
 
     this.addSettingTab(new OmniFocusSettingTab(this.app, this));
+    this.configureAutoFullSync();
+  }
+
+  override onunload(): void {
+    this.stopAutoFullSync();
+  }
+
+  configureAutoFullSync(): void {
+    this.stopAutoFullSync();
+
+    const intervalMinutes = this.settings.autoFullSyncIntervalMinutes;
+    if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+      return;
+    }
+
+    const intervalMs = Math.max(1, Math.round(intervalMinutes)) * 60 * 1000;
+    this.autoFullSyncIntervalId = window.setInterval(() => {
+      void this.runAutoFullSyncTick();
+    }, intervalMs);
+  }
+
+  stopAutoFullSync(): void {
+    if (this.autoFullSyncIntervalId !== null) {
+      window.clearInterval(this.autoFullSyncIntervalId);
+      this.autoFullSyncIntervalId = null;
+    }
+  }
+
+  async runAutoFullSyncTick(): Promise<void> {
+    if (this.autoFullSyncInProgress) {
+      return;
+    }
+
+    this.autoFullSyncInProgress = true;
+    try {
+      await this.runFullVaultSync();
+    } catch (error) {
+      console.error("Automatic full vault sync failed", error);
+    } finally {
+      this.autoFullSyncInProgress = false;
+    }
   }
 
   getExcludedFolders(): string[] {
@@ -1137,6 +1182,21 @@ class OmniFocusSettingTab extends PluginSettingTab {
           this.plugin.settings.dryRun = value;
           await this.plugin.savePluginData();
         });
+      });
+
+    new Setting(containerEl)
+      .setName("Automatic full sync interval (minutes)")
+      .setDesc("Set to 0 to disable. Example: 10 runs full sync every 10 minutes.")
+      .addText((text) => {
+        text
+          .setPlaceholder("0")
+          .setValue(String(this.plugin.settings.autoFullSyncIntervalMinutes))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            this.plugin.settings.autoFullSyncIntervalMinutes = Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
+            await this.plugin.savePluginData();
+            this.plugin.configureAutoFullSync();
+          });
       });
   }
 }
