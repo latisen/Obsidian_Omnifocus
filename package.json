@@ -1,0 +1,19 @@
+{
+  "name": "obsidian-omnifocus",
+  "version": "0.1.0",
+  "description": "Obsidian plugin for syncing unfinished tasks to the OmniFocus Inbox.",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "build": "node esbuild.config.mjs --production",
+    "check": "tsc --noEmit",
+    "dev": "node esbuild.config.mjs --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "esbuild": "^0.25.8",
+    "obsidian": "latest",
+    "typescript": "^5.9.2"
+  }
+}
