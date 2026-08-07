@@ -453,6 +453,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
   async syncTasksToOmniFocus(): Promise<SyncSummary> {
     const parsedTasks = await this.collectUnfinishedTasks();
+    const parsedTaskByFingerprint = new Map(parsedTasks.map((task) => [this.createTaskFingerprint(task), task]));
     const preparedTasks = parsedTasks.map((task) => this.prepareTaskForOmniFocus(task));
     const dedupeSummary = this.buildDedupeSummary(preparedTasks);
     const syncIssues: SyncIssue[] = this.createDedupeSyncIssues(dedupeSummary);
@@ -493,6 +494,24 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const createdTasks: PreparedOmniFocusTask[] = [];
     const failedTasks: PreparedOmniFocusTask[] = [];
     let firstFailureMessage: string | undefined;
+
+    for (const task of dedupeSummary.alreadyExportedTasks) {
+      const record = this.state.exportedTasks[task.fingerprint];
+      if (!record?.omniFocusId) {
+        continue;
+      }
+
+      const currentTask = parsedTaskByFingerprint.get(task.fingerprint);
+      if (!currentTask) {
+        continue;
+      }
+
+      try {
+        await this.reconcileExistingTaskSchedule(task, currentTask, record);
+      } catch (error) {
+        firstFailureMessage ??= error instanceof Error ? error.message : "Failed to reconcile existing task schedule.";
+      }
+    }
 
     for (const task of dedupeSummary.pendingExportTasks) {
       const exported = await this.exportTaskToOmniFocus(task);
@@ -747,6 +766,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const statusMap = new Map(statuses.map((status) => [status.id, status]));
     const obsidianTasks = await this.collectAllTasks();
     const taskMap = new Map(obsidianTasks.map((task) => [this.createTaskFingerprint(task), task]));
+    const taskMapByPathAndLine = new Map(obsidianTasks.map((task) => [`${task.sourcePath}:${task.sourceLine}`, task]));
 
     let updatedInObsidian = 0;
     let updatedInOmniFocus = 0;
@@ -765,7 +785,11 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         continue;
       }
 
-      const obsidianTask = taskMap.get(record.fingerprint);
+      let obsidianTask = taskMap.get(record.fingerprint);
+      if (!obsidianTask) {
+        obsidianTask = taskMapByPathAndLine.get(`${record.sourcePath}:${record.sourceLine ?? ""}`) ?? null;
+      }
+
       if (!obsidianTask) {
         missingInObsidian += 1;
         continue;
@@ -907,6 +931,40 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       exportSummary,
       completionSummary
     };
+  }
+
+  async reconcileExistingTaskSchedule(task: PreparedOmniFocusTask, currentTask: ParsedObsidianTask, record: ExportRecord): Promise<void> {
+    if (!record.omniFocusId) {
+      return;
+    }
+
+    const statuses = await fetchOmniFocusStatuses([record.omniFocusId]);
+    const status = statuses[0];
+    if (!status || status.missing) {
+      return;
+    }
+
+    const obsidianPlanned = normalizeEpochSeconds(currentTask.plannedEpochSeconds);
+    const obsidianDue = normalizeEpochSeconds(currentTask.dueEpochSeconds);
+    const omniPlanned = normalizeEpochSeconds(status.plannedEpochSeconds);
+    const omniDue = normalizeEpochSeconds(status.dueEpochSeconds);
+
+    if (!hasAnyScheduleValue(omniPlanned, omniDue)) {
+      return;
+    }
+
+    const needsObsidianUpdate = !areEpochValuesEqual(obsidianPlanned, omniPlanned) || !areEpochValuesEqual(obsidianDue, omniDue);
+    if (!needsObsidianUpdate) {
+      record.plannedEpochSeconds = omniPlanned;
+      record.dueEpochSeconds = omniDue;
+      await this.savePluginData();
+      return;
+    }
+
+    await this.setObsidianTaskScheduling(currentTask, omniPlanned, omniDue);
+    record.plannedEpochSeconds = omniPlanned;
+    record.dueEpochSeconds = omniDue;
+    await this.savePluginData();
   }
 
   async setObsidianTaskCompletion(task: ParsedObsidianTask, completed: boolean): Promise<void> {
