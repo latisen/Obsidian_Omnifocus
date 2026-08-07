@@ -482,15 +482,6 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       }, syncIssues);
     }
 
-    if (dedupeSummary.pendingExportTasks.length === 0) {
-      return this.finalizeSyncSummary({
-        dedupeSummary,
-        createdTasks: [],
-        failedTasks: [],
-        dryRun: false
-      }, syncIssues);
-    }
-
     const createdTasks: PreparedOmniFocusTask[] = [];
     const failedTasks: PreparedOmniFocusTask[] = [];
     let firstFailureMessage: string | undefined;
@@ -511,6 +502,15 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       } catch (error) {
         firstFailureMessage ??= error instanceof Error ? error.message : "Failed to reconcile existing task schedule.";
       }
+    }
+
+    if (dedupeSummary.pendingExportTasks.length === 0) {
+      return this.finalizeSyncSummary({
+        dedupeSummary,
+        createdTasks: [],
+        failedTasks: [],
+        dryRun: false
+      }, syncIssues);
     }
 
     for (const task of dedupeSummary.pendingExportTasks) {
