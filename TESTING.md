@@ -34,6 +34,7 @@ npm run build
 5. Gå till pluginets settings.
 6. Låt `Dry run` vara påslaget för de första testerna.
 7. För schemalagd helsynk: sätt `Automatic full sync interval (minutes)` till t.ex. `10`.
+8. För AI-förslag från lokal modell: sätt `LM Studio base URL` och `LM Studio model`.
 
 ## Testkommandon
 
@@ -45,8 +46,11 @@ Pluginet använder dessa kommandon:
 - `Reset sync state and export all unfinished tasks`
 - `Sync completed state between Obsidian and OmniFocus`
 - `Test OmniFocus AppleScript bridge`
+- `Generate task suggestions with LM Studio for active note`
 
 Observera: automatisk körning använder samma logik som `Run full vault sync (export + completion)`.
+
+Observera: AI-kommandot använder endast den öppna/aktiva anteckningen och lägger till en ny `#`-rubrik längst ner med föreslagna tasks.
 
 Öppna Command Palette i Obsidian och kör kommandona därifrån.
 

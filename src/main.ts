@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { App, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
+import { App, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, requestUrl } from "obsidian";
 
 interface ExportRecord {
   fingerprint: string;
@@ -97,6 +97,8 @@ interface OmniFocusPluginSettings {
   excludedFolders: string;
   dryRun: boolean;
   autoFullSyncIntervalMinutes: number;
+  lmStudioBaseUrl: string;
+  lmStudioModel: string;
 }
 
 interface StoredPluginData {
@@ -110,7 +112,9 @@ const DEFAULT_SETTINGS: OmniFocusPluginSettings = {
   vaultName: "",
   excludedFolders: "",
   dryRun: true,
-  autoFullSyncIntervalMinutes: 0
+  autoFullSyncIntervalMinutes: 0,
+  lmStudioBaseUrl: "http://127.0.0.1:1234",
+  lmStudioModel: "local-model"
 };
 
 const DEFAULT_STATE: OmniFocusPluginState = {
@@ -187,6 +191,14 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: "generate-ai-task-suggestions-for-active-note",
+      name: "Generate task suggestions with LM Studio for active note",
+      callback: async () => {
+        await this.generateAiTaskSuggestionsForActiveNote();
+      }
+    });
+
     this.addSettingTab(new OmniFocusSettingTab(this.app, this));
     this.configureAutoFullSync();
   }
@@ -229,6 +241,123 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     } finally {
       this.autoFullSyncInProgress = false;
     }
+  }
+
+  async generateAiTaskSuggestionsForActiveNote(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new Notice("Open a markdown note first.");
+      return;
+    }
+
+    const noteContent = await this.app.vault.read(activeFile);
+    if (noteContent.trim().length === 0) {
+      new Notice("Active note is empty.");
+      return;
+    }
+
+    let generatedTaskList: string;
+    try {
+      generatedTaskList = await this.requestTaskSuggestionsFromLmStudio(noteContent);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown LM Studio error.";
+      new Notice(`LM Studio request failed: ${message}`, 10000);
+      return;
+    }
+
+    const timestamp = new Date().toLocaleString();
+    const aiSection = [
+      "",
+      `# AI task suggestions (${timestamp})`,
+      "",
+      generatedTaskList.trim()
+    ].join("\n");
+
+    const nextContent = noteContent.endsWith("\n") ? `${noteContent}${aiSection}\n` : `${noteContent}\n${aiSection}\n`;
+    await this.app.vault.modify(activeFile, nextContent);
+    new Notice(`AI task suggestions added to ${activeFile.path}.`, 9000);
+  }
+
+  async requestTaskSuggestionsFromLmStudio(noteContent: string): Promise<string> {
+    const baseUrl = this.settings.lmStudioBaseUrl.trim().replace(/\/+$/, "");
+    if (baseUrl.length === 0) {
+      throw new Error("LM Studio base URL is empty.");
+    }
+
+    const model = this.settings.lmStudioModel.trim() || "local-model";
+    const prompt = [
+      "Du är en assistent som hittar konkreta uppgifter i en anteckning.",
+      "Returnera ENDAST en markdown-lista med checkboxar.",
+      "Varje rad måste ha formatet: - [ ] <uppgift>",
+      "Max 12 uppgifter.",
+      "",
+      "Anteckning:",
+      noteContent
+    ].join("\n");
+
+    const response = await requestUrl({
+      url: `${baseUrl}/v1/chat/completions`,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        messages: [
+          {
+            role: "system",
+            content: "Svara alltid med en ren markdown-checklista utan förklarande text."
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ]
+      })
+    });
+
+    const rawContent = response.json?.choices?.[0]?.message?.content;
+    if (typeof rawContent !== "string" || rawContent.trim().length === 0) {
+      throw new Error("LM Studio returned empty content.");
+    }
+
+    const normalized = this.normalizeAiTaskList(rawContent);
+    if (normalized.trim().length === 0) {
+      throw new Error("LM Studio response did not contain any actionable tasks.");
+    }
+
+    return normalized;
+  }
+
+  normalizeAiTaskList(input: string): string {
+    const withoutCodeFences = input.replace(/```[a-zA-Z]*\n?|```/g, "").trim();
+    const lines = withoutCodeFences
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    if (lines.length === 0) {
+      return "";
+    }
+
+    const normalizedLines = lines.map((line) => {
+      if (/^[-*]\s+\[[ xX]\]\s+/.test(line)) {
+        return line.replace(/^[-*]\s+\[[xX]\]\s+/, "- [ ] ").replace(/^\*\s+/, "- ");
+      }
+
+      if (/^[-*]\s+/.test(line)) {
+        return `- [ ] ${line.replace(/^[-*]\s+/, "").trim()}`;
+      }
+
+      if (/^\d+[.)]\s+/.test(line)) {
+        return `- [ ] ${line.replace(/^\d+[.)]\s+/, "").trim()}`;
+      }
+
+      return `- [ ] ${line}`;
+    });
+
+    return normalizedLines.join("\n");
   }
 
   getExcludedFolders(): string[] {
@@ -1196,6 +1325,32 @@ class OmniFocusSettingTab extends PluginSettingTab {
             this.plugin.settings.autoFullSyncIntervalMinutes = Number.isNaN(parsed) || parsed < 0 ? 0 : parsed;
             await this.plugin.savePluginData();
             this.plugin.configureAutoFullSync();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("LM Studio base URL")
+      .setDesc("OpenAI-compatible LM Studio URL for AI note analysis.")
+      .addText((text) => {
+        text
+          .setPlaceholder("http://127.0.0.1:1234")
+          .setValue(this.plugin.settings.lmStudioBaseUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.lmStudioBaseUrl = value.trim();
+            await this.plugin.savePluginData();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("LM Studio model")
+      .setDesc("Model name sent to LM Studio /v1/chat/completions.")
+      .addText((text) => {
+        text
+          .setPlaceholder("local-model")
+          .setValue(this.plugin.settings.lmStudioModel)
+          .onChange(async (value) => {
+            this.plugin.settings.lmStudioModel = value.trim() || "local-model";
+            await this.plugin.savePluginData();
           });
       });
   }
