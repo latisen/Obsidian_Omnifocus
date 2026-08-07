@@ -87,6 +87,26 @@ Förväntat resultat:
 - Note-fältet i OmniFocus innehåller de tre indenterade raderna i samma ordning.
 - Backlinken läggs till under notraderna.
 
+### 2B. Indenterad child-task ska bli subtask
+
+Fil: `Phase8-Test-02B.md`
+
+```md
+- [ ] Plan launch
+  Prepare announcement copy
+  - [ ] Review homepage
+    Check hero text
+  Confirm release date
+```
+
+Förväntat resultat:
+
+- `Plan launch` skapas som parent-task i OmniFocus Inbox.
+- `Review homepage` skapas som subtask under `Plan launch`.
+- Parent-taskens note innehåller de vanliga noteraderna och backlink.
+- Subtaskens note innehåller `Check hero text` och egen backlink.
+- Ingen child-task ska plattas ut till vanlig text om den faktiskt är en task-rad.
+
 ### 3. Tasks i flera filer
 
 Fil: `Phase8-Test-03-A.md`
@@ -189,6 +209,15 @@ Förväntat resultat i V1:
 8. Bekräfta att ingen OmniFocus-bekräftelsedialog visas under skapandet.
 9. Kör synken en tredje gång utan att ändra filen.
 10. Bekräfta att ingen dubblett skapas.
+
+## Extra test för subtasks
+
+1. Slå på `Dry run`.
+2. Lägg in `Phase8-Test-02B.md`.
+3. Kör synken och bekräfta att parent-tasken räknas som exportkandidat.
+4. Slå av `Dry run`.
+5. Kör synken igen.
+6. Bekräfta i OmniFocus att child-tasken skapades som subtask och inte som fristående Inbox-task.
 
 ## Vad du bör rapportera tillbaka efter varje test
 

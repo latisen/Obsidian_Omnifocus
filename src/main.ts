@@ -17,6 +17,7 @@ interface ParsedObsidianTask {
   sourceLine: number;
   headingPath: string[];
   rawTaskLine: string;
+  children: ParsedObsidianTask[];
 }
 
 interface PreparedOmniFocusTask {
@@ -28,6 +29,7 @@ interface PreparedOmniFocusTask {
   sourceLine: number;
   headingPath: string[];
   fingerprint: string;
+  children: PreparedOmniFocusTask[];
 }
 
 interface DedupeSummary {
@@ -140,15 +142,16 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   createTaskFingerprint(task: ParsedObsidianTask): string {
     const heading = normalizeFingerprintValue(task.headingPath.join(" > "));
     const stableReference = normalizeFingerprintValue(`${task.sourceLine}`);
+    const childSignature = task.children.map((child) => serializeParsedTaskForFingerprint(child)).join("||");
     return [
       FINGERPRINT_VERSION,
       normalizeFingerprintValue(task.sourcePath),
       stableReference,
       heading,
       normalizeFingerprintValue(task.title),
-      normalizeFingerprintValue(task.note)
-    ]
-      .join("::");
+      normalizeFingerprintValue(task.note),
+      childSignature
+    ].join("::");
   }
 
   prepareTaskForOmniFocus(task: ParsedObsidianTask): PreparedOmniFocusTask {
@@ -164,7 +167,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       sourcePath: task.sourcePath,
       sourceLine: task.sourceLine,
       headingPath: [...task.headingPath],
-      fingerprint: this.createTaskFingerprint(task)
+      fingerprint: this.createTaskFingerprint(task),
+      children: task.children.map((child) => this.prepareTaskForOmniFocus(child))
     };
   }
 
@@ -309,7 +313,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
   async exportTaskToOmniFocus(task: PreparedOmniFocusTask): Promise<OmniFocusExportResult> {
     try {
-      await runOmniFocusAppleScript(task.title, task.note);
+      await runOmniFocusAppleScript(task);
       return { ok: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown AppleScript error.";
@@ -441,62 +445,105 @@ function parseMarkdownTasks(content: string, sourcePath: string): ParsedObsidian
       continue;
     }
 
-    const indent = taskMatch[1];
-    const status = taskMatch[3];
-    const title = taskMatch[4].trim();
-
-    if (isCompletedTask(status) || title.length === 0) {
+    if (isCompletedTask(taskMatch[3]) || taskMatch[4].trim().length === 0) {
       continue;
     }
 
-    const noteLines: string[] = [];
-    let nextIndex = index + 1;
+    const parsedTask = parseTaskTree(lines, index, sourcePath, [...headingPath]);
+    if (!parsedTask) {
+      continue;
+    }
 
-    while (nextIndex < lines.length) {
-      const candidateLine = lines[nextIndex];
+    tasks.push(parsedTask.task);
+    index = parsedTask.nextIndex - 1;
+  }
 
-      if (candidateLine.trim().length === 0) {
-        noteLines.push("");
+  return tasks;
+}
+
+function parseTaskTree(
+  lines: string[],
+  startIndex: number,
+  sourcePath: string,
+  headingPath: string[]
+): { task: ParsedObsidianTask; nextIndex: number } | null {
+  const line = lines[startIndex];
+  const taskMatch = line.match(TASK_LINE_PATTERN);
+  if (!taskMatch) {
+    return null;
+  }
+
+  const indent = taskMatch[1];
+  const status = taskMatch[3];
+  const title = taskMatch[4].trim();
+  const currentIndentLength = getIndentWidth(indent);
+
+  if (isCompletedTask(status) || title.length === 0) {
+    return null;
+  }
+
+  const noteLines: string[] = [];
+  const children: ParsedObsidianTask[] = [];
+  let nextIndex = startIndex + 1;
+
+  while (nextIndex < lines.length) {
+    const candidateLine = lines[nextIndex];
+
+    if (candidateLine.trim().length === 0) {
+      noteLines.push("");
+      nextIndex += 1;
+      continue;
+    }
+
+    const candidateTaskMatch = candidateLine.match(TASK_LINE_PATTERN);
+    if (candidateTaskMatch) {
+      const candidateIndentLength = getIndentWidth(candidateTaskMatch[1]);
+      if (candidateIndentLength <= currentIndentLength) {
+        break;
+      }
+
+      if (isCompletedTask(candidateTaskMatch[3]) || candidateTaskMatch[4].trim().length === 0) {
         nextIndex += 1;
         continue;
       }
 
-      const candidateTaskMatch = candidateLine.match(TASK_LINE_PATTERN);
-      if (candidateTaskMatch) {
-        const candidateIndentLength = getIndentWidth(candidateTaskMatch[1]);
-        const currentIndentLength = getIndentWidth(indent);
-        if (candidateIndentLength <= currentIndentLength) {
-          break;
-        }
+      const parsedChildTask = parseTaskTree(lines, nextIndex, sourcePath, headingPath);
+      if (!parsedChildTask) {
+        nextIndex += 1;
+        continue;
       }
 
-      const continuationIndentLength = getIndentWidth(candidateLine.match(/^([ \t]*)/)?.[1] ?? "");
-      const minimumChildIndent = getIndentWidth(indent) + 1;
-      if (continuationIndentLength < minimumChildIndent) {
-        break;
-      }
-
-      noteLines.push(stripContinuationIndent(candidateLine, minimumChildIndent));
-      nextIndex += 1;
+      children.push(parsedChildTask.task);
+      nextIndex = parsedChildTask.nextIndex;
+      continue;
     }
 
-    while (noteLines.length > 0 && noteLines[noteLines.length - 1] === "") {
-      noteLines.pop();
+    const continuationIndentLength = getIndentWidth(candidateLine.match(/^([ \t]*)/)?.[1] ?? "");
+    const minimumChildIndent = currentIndentLength + 1;
+    if (continuationIndentLength < minimumChildIndent) {
+      break;
     }
 
-    tasks.push({
+    noteLines.push(stripContinuationIndent(candidateLine, minimumChildIndent));
+    nextIndex += 1;
+  }
+
+  while (noteLines.length > 0 && noteLines[noteLines.length - 1] === "") {
+    noteLines.pop();
+  }
+
+  return {
+    task: {
       title,
       note: noteLines.join("\n"),
       sourcePath,
-      sourceLine: index + 1,
-      headingPath: [...headingPath],
-      rawTaskLine: line
-    });
-
-    index = nextIndex - 1;
-  }
-
-  return tasks;
+      sourceLine: startIndex + 1,
+      headingPath,
+      rawTaskLine: line,
+      children
+    },
+    nextIndex
+  };
 }
 
 function isCompletedTask(status: string): boolean {
@@ -520,20 +567,69 @@ async function runAppleScript(script: string, args: string[] = []): Promise<void
   });
 }
 
-async function runOmniFocusAppleScript(taskTitle: string, taskNote: string): Promise<void> {
-  const script = [
-    "on run argv",
-    "set taskTitle to item 1 of argv",
-    "set taskNote to item 2 of argv",
-    "tell application \"OmniFocus\"",
-    "tell default document",
-    "make new inbox task with properties {name:taskTitle, note:taskNote}",
-    "end tell",
-    "end tell",
-    "end run"
-  ].join("\n");
+async function runOmniFocusAppleScript(task: PreparedOmniFocusTask): Promise<void> {
+  const script = buildOmniFocusAppleScript(task);
+  await runAppleScript(script);
+}
 
-  await runAppleScript(script, [taskTitle, taskNote]);
+function buildOmniFocusAppleScript(task: PreparedOmniFocusTask): string {
+  const lines = [
+    "tell application \"OmniFocus\"",
+    "  tell default document"
+  ];
+
+  appendTaskCreationLines(lines, task, "rootTask", 2, null);
+  lines.push("  end tell", "end tell");
+
+  return lines.join("\n");
+}
+
+function appendTaskCreationLines(
+  lines: string[],
+  task: PreparedOmniFocusTask,
+  variableName: string,
+  indentLevel: number,
+  parentVariableName: string | null
+): void {
+  const indent = "  ".repeat(indentLevel);
+  const properties = `{name:${toAppleScriptString(task.title)}, note:${toAppleScriptString(task.note)}}`;
+
+  if (parentVariableName === null) {
+    lines.push(`${indent}set ${variableName} to make new inbox task with properties ${properties}`);
+  } else {
+    lines.push(`${indent}set ${variableName} to make new task with properties ${properties} at end of tasks of ${parentVariableName}`);
+  }
+
+  task.children.forEach((child, index) => {
+    appendTaskCreationLines(lines, child, `${variableName}_${index + 1}`, indentLevel, variableName);
+  });
+}
+
+function toAppleScriptString(value: string): string {
+  if (value.length === 0) {
+    return '""';
+  }
+
+  return value
+    .split("\n")
+    .map((part) => `"${escapeAppleScriptString(part)}"`)
+    .join(" & linefeed & ");
+}
+
+function escapeAppleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function serializeParsedTaskForFingerprint(task: ParsedObsidianTask): string {
+  const childSignature = task.children.map((child) => serializeParsedTaskForFingerprint(child)).join("||");
+  return [
+    normalizeFingerprintValue(task.title),
+    normalizeFingerprintValue(task.note),
+    normalizeFingerprintValue(task.sourcePath),
+    normalizeFingerprintValue(`${task.sourceLine}`),
+    normalizeFingerprintValue(task.headingPath.join(" > ")),
+    childSignature
+  ].join("::");
 }
 
 function getIndentWidth(input: string): number {

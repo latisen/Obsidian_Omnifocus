@@ -14,6 +14,17 @@ Orsak:
 
 Det innebär att URL-schemat nu är referensmaterial, medan AppleScript är den aktiva implementationen.
 
+## Nästlade tasks i Obsidian
+
+Pluginet stöder nu att en indenterad task under en annan task skapas som subtask i OmniFocus.
+
+V1-beteende:
+
+- vanlig indenterad text under en task blir note-innehåll för den tasken
+- en indenterad rad som själv är en task blir child-task i pluginets interna modell
+- vid export skapas child-tasken som subtask i OmniFocus via AppleScript
+- varje task eller subtask får sin egen note och egen Obsidian-backlink
+
 ## Syfte i det här projektet
 
 Pluginet ska skapa nya tasks i OmniFocus från Obsidian-tasks.
