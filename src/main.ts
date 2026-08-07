@@ -460,6 +460,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   async syncTasksToOmniFocus(): Promise<SyncSummary> {
     const parsedTasks = await this.collectUnfinishedTasks();
     const parsedTaskByFingerprint = new Map(parsedTasks.map((task) => [this.createTaskFingerprint(task), task]));
+    const parsedTaskByPathAndLine = new Map(parsedTasks.map((task) => [`${task.sourcePath}:${task.sourceLine}`, task]));
     const preparedTasks = parsedTasks.map((task) => this.prepareTaskForOmniFocus(task));
     const dedupeSummary = this.buildDedupeSummary(preparedTasks);
     this.activeSyncIssues = [];
@@ -501,7 +502,11 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         continue;
       }
 
-      const currentTask = parsedTaskByFingerprint.get(task.fingerprint);
+      let currentTask = parsedTaskByFingerprint.get(task.fingerprint);
+      if (!currentTask) {
+        currentTask = parsedTaskByPathAndLine.get(`${task.sourcePath}:${task.sourceLine}`) ?? null;
+      }
+
       if (!currentTask) {
         continue;
       }
