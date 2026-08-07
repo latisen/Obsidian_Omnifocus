@@ -466,7 +466,33 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const preparedTasks = parsedTasks.map((task) => this.prepareTaskForOmniFocus(task));
     const dedupeSummary = this.buildDedupeSummary(preparedTasks);
     this.activeSyncIssues = [];
-    const syncIssues: SyncIssue[] = this.createDedupeSyncIssues(dedupeSummary);
+
+    const scheduleDetailsByFingerprint = new Map<string, string>();
+    const trackedOmniFocusIds = dedupeSummary.alreadyExportedTasks
+      .map((task) => this.state.exportedTasks[task.fingerprint]?.omniFocusId)
+      .filter((id): id is string => Boolean(id));
+
+    if (trackedOmniFocusIds.length > 0 && !this.settings.dryRun) {
+      const runtimeValidationError = this.validateOmniFocusRuntime();
+      if (!runtimeValidationError) {
+        const statuses = await fetchOmniFocusStatuses(trackedOmniFocusIds);
+        const statusMap = new Map(statuses.map((status) => [status.id, status]));
+
+        dedupeSummary.alreadyExportedTasks.forEach((task) => {
+          const record = this.state.exportedTasks[task.fingerprint];
+          const status = record?.omniFocusId ? statusMap.get(record.omniFocusId) : undefined;
+          if (!status) {
+            return;
+          }
+
+          const plannedValue = status.plannedDateText ?? "";
+          const dueValue = status.dueDateText ?? "";
+          scheduleDetailsByFingerprint.set(task.fingerprint, `OmniFocus planned="${plannedValue}" due="${dueValue}"`);
+        });
+      }
+    }
+
+    const syncIssues: SyncIssue[] = this.createDedupeSyncIssues(dedupeSummary, scheduleDetailsByFingerprint);
     syncIssues.forEach((issue) => this.activeSyncIssues.push(issue));
 
     if (this.settings.dryRun) {
@@ -563,11 +589,15 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     }, syncIssues);
   }
 
-  createDedupeSyncIssues(dedupeSummary: DedupeSummary): SyncIssue[] {
+  createDedupeSyncIssues(dedupeSummary: DedupeSummary, scheduleDetailsByFingerprint?: Map<string, string>): SyncIssue[] {
     const issues: SyncIssue[] = [];
 
     dedupeSummary.alreadyExportedTasks.forEach((task) => {
-      issues.push(this.createSyncIssue(task, "Skipped: already exported (fingerprint exists in cache)."));
+      const detail = scheduleDetailsByFingerprint?.get(task.fingerprint);
+      const reason = detail
+        ? `Skipped: already exported (fingerprint exists in cache). ${detail}`
+        : "Skipped: already exported (fingerprint exists in cache).";
+      issues.push(this.createSyncIssue(task, reason));
     });
 
     dedupeSummary.duplicateInScanTasks.forEach((task) => {
