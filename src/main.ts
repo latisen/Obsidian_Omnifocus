@@ -459,7 +459,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   }
 
   buildOmniFocusNote(noteBody: string, backlinkLabel: string, backlinkUrl: string): string {
-    const sections = [noteBody.trim(), `Obsidian: ${backlinkLabel}\n${backlinkUrl}`].filter((value) => value.length > 0);
+    const normalizedNoteBody = normalizeMarkdownLinksForOmniFocus(noteBody.trim());
+    const sections = [normalizedNoteBody, `Obsidian: ${backlinkLabel}\n${backlinkUrl}`].filter((value) => value.length > 0);
     return sections.join("\n\n");
   }
 
@@ -859,6 +860,18 @@ function isCompletedTask(status: string): boolean {
 
 function normalizeFingerprintValue(input: string): string {
   return input.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function normalizeMarkdownLinksForOmniFocus(input: string): string {
+  if (input.length === 0) {
+    return input;
+  }
+
+  // OmniFocus sometimes includes trailing ')' in URL parsing for markdown links.
+  // Convert [label](url) -> "label: url" to preserve both parts without markdown syntax.
+  return input.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, url: string) => {
+    return `${label}: ${url}`;
+  });
 }
 
 async function runAppleScript(script: string, args: string[] = []): Promise<void> {
