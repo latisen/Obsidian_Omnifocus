@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { App, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
 
 interface ExportRecord {
@@ -42,6 +43,12 @@ interface SyncSummary {
   createdTasks: PreparedOmniFocusTask[];
   failedTasks: PreparedOmniFocusTask[];
   dryRun: boolean;
+  errorMessage?: string;
+  firstFailureMessage?: string;
+}
+
+interface OmniFocusExportResult {
+  ok: boolean;
   errorMessage?: string;
 }
 
@@ -100,6 +107,15 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       callback: async () => {
         await this.clearExportedTaskCache();
         new Notice("Exported task cache cleared.");
+      }
+    });
+
+    this.addCommand({
+      id: "test-omnifocus-applescript-bridge",
+      name: "Test OmniFocus AppleScript bridge",
+      callback: async () => {
+        const result = await this.testOmniFocusAppleScriptBridge();
+        new Notice(result.ok ? "OmniFocus AppleScript bridge is working." : `OmniFocus AppleScript bridge failed: ${result.errorMessage ?? "Unknown error."}` , 10000);
       }
     });
 
@@ -215,11 +231,13 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
     const createdTasks: PreparedOmniFocusTask[] = [];
     const failedTasks: PreparedOmniFocusTask[] = [];
+    let firstFailureMessage: string | undefined;
 
     for (const task of dedupeSummary.pendingExportTasks) {
-      const exported = this.exportTaskToOmniFocus(task);
-      if (!exported) {
+      const exported = await this.exportTaskToOmniFocus(task);
+      if (!exported.ok) {
         failedTasks.push(task);
+        firstFailureMessage ??= exported.errorMessage;
         continue;
       }
 
@@ -231,7 +249,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       dedupeSummary,
       createdTasks,
       failedTasks,
-      dryRun: false
+      dryRun: false,
+      firstFailureMessage
     };
   }
 
@@ -272,15 +291,6 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     return sections.join("\n\n");
   }
 
-  createOmniFocusAddUrl(task: PreparedOmniFocusTask): string {
-    const searchParams = new URLSearchParams({
-      name: task.title,
-      note: task.note
-    });
-
-    return `omnifocus:///add?${searchParams.toString()}`;
-  }
-
   validateOmniFocusRuntime(): string | null {
     if (!Platform.isDesktopApp) {
       return "OmniFocus sync requires Obsidian Desktop.";
@@ -290,22 +300,51 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       return "OmniFocus sync requires macOS with OmniFocus installed.";
     }
 
-    if (typeof window === "undefined" || typeof window.open !== "function") {
-      return "This environment cannot open the OmniFocus URL scheme.";
+    if (typeof process === "undefined") {
+      return "This environment cannot run AppleScript for OmniFocus export.";
     }
 
     return null;
   }
 
-  exportTaskToOmniFocus(task: PreparedOmniFocusTask): boolean {
-    const url = this.createOmniFocusAddUrl(task);
+  async exportTaskToOmniFocus(task: PreparedOmniFocusTask): Promise<OmniFocusExportResult> {
+    try {
+      await runOmniFocusAppleScript(task.title, task.note);
+      return { ok: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown AppleScript error.";
+      console.error("Failed to create OmniFocus task via AppleScript", { error, task });
+      return {
+        ok: false,
+        errorMessage
+      };
+    }
+  }
+
+  async testOmniFocusAppleScriptBridge(): Promise<OmniFocusExportResult> {
+    const runtimeValidationError = this.validateOmniFocusRuntime();
+    if (runtimeValidationError) {
+      return {
+        ok: false,
+        errorMessage: runtimeValidationError
+      };
+    }
 
     try {
-      const openedWindow = window.open(url, "_blank");
-      return openedWindow !== null;
+      await runAppleScript([
+        "tell application \"OmniFocus\"",
+        "tell default document",
+        "name",
+        "end tell",
+        "end tell"
+      ].join("\n"));
+
+      return { ok: true };
     } catch (error) {
-      console.error("Failed to open OmniFocus URL", { error, task, url });
-      return false;
+      return {
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : "Unknown AppleScript bridge error."
+      };
     }
   }
 
@@ -322,6 +361,10 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
     if (dedupeSummary.pendingExportTasks.length === 0) {
       return `Sync complete: no new tasks to export. Skipped ${dedupeSummary.alreadyExportedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.`;
+    }
+
+    if (summary.failedTasks.length > 0 && summary.firstFailureMessage) {
+      return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}. First error: ${summary.firstFailureMessage}`;
     }
 
     return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.`;
@@ -462,6 +505,35 @@ function isCompletedTask(status: string): boolean {
 
 function normalizeFingerprintValue(input: string): string {
   return input.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+async function runAppleScript(script: string, args: string[] = []): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    execFile("osascript", ["-e", script, "--", ...args], (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr.trim() || stdout.trim() || error.message));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
+async function runOmniFocusAppleScript(taskTitle: string, taskNote: string): Promise<void> {
+  const script = [
+    "on run argv",
+    "set taskTitle to item 1 of argv",
+    "set taskNote to item 2 of argv",
+    "tell application \"OmniFocus\"",
+    "tell default document",
+    "make new inbox task with properties {name:taskTitle, note:taskNote}",
+    "end tell",
+    "end tell",
+    "end run"
+  ].join("\n");
+
+  await runAppleScript(script, [taskTitle, taskNote]);
 }
 
 function getIndentWidth(input: string): number {

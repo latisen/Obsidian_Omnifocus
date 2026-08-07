@@ -25,6 +25,7 @@ Den här filen är arbetsplanen för projektet. Varje punkt går att checka av n
 - [x] Integration mot OmniFocus ska använda OmniFocus Advanced URI.
 - [x] Obsidian-backlink i OmniFocus note är ett fungerande arbetssätt.
 - [x] Om inget projekt anges vid skapande ska uppgiften landa i OmniFocus Inbox.
+- [x] Faktisk exportimplementation i pluginet använder AppleScript för att undvika OmniFocus bekräftelsedialog via URL-schemat.
 
 ## Fas 1: Beslut och teknisk verifiering
 
@@ -38,6 +39,8 @@ Den här filen är arbetsplanen för projektet. Varje punkt går att checka av n
   Bekräftat av användaren som redan gör detta manuellt idag.
 - [x] Dokumentera eventuella begränsningar i OmniFocus-API eller URL-scheme.
   Dokumenterat i `Omnifocus-skill.md`.
+
+Notering efter senare verifiering: URL-schemat fungerade men visade bekräftelsedialog vid skapande. Pluginets exportväg har därför ändrats till AppleScript på macOS, medan URL-schemat fortfarande finns dokumenterat som referens.
 
 ## Fas 2: Grundprojekt och scaffolding
 

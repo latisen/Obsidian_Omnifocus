@@ -1,7 +1,18 @@
-# OmniFocus URL Scheme Skill
+# OmniFocus Integration Skill
 
-Den här filen sammanfattar hur OmniFocus URL-schemat ska användas i detta repo.
+Den här filen sammanfattar hur OmniFocus-integrationen ska användas i detta repo.
 Källa: https://inside.omnifocus.com/url-schemes
+
+## Nuvarande beslut
+
+URL-schemat är dokumenterat och verifierat, men pluginets faktiska export använder nu AppleScript på macOS.
+
+Orsak:
+
+- URL-schemat öppnade en OmniFocus-dialog för att bekräfta skapandet
+- AppleScript kunde skapa Inbox-task direkt utan bekräftelsedialog
+
+Det innebär att URL-schemat nu är referensmaterial, medan AppleScript är den aktiva implementationen.
 
 ## Syfte i det här projektet
 
@@ -101,14 +112,18 @@ Nuvarande implementation i pluginet gör följande:
 - scannar hela valvet
 - parser tasks till ett internt OmniFocus-format
 - deduplikerar mot både aktuell scan och pluginets lokala exportregister
-- bygger OmniFocus-URL med `name` och `note`
-- öppnar `omnifocus:///add?...` för varje återstående task
-- sparar exportpost lokalt bara när URL-öppningen inte misslyckas lokalt
+- kör AppleScript via `osascript` för varje återstående task
+- skapar ny Inbox-task med titel och note utan bekräftelsedialog
+- sparar exportpost lokalt bara när AppleScript-körningen lyckas
 
-URL:en byggs från pluginet med parameterkodning motsvarande:
+AppleScript-flödet använder i praktiken:
 
 ```text
-omnifocus:///add?name=...&note=...
+tell application "OmniFocus"
+	tell default document
+		make new inbox task with properties {name:..., note:...}
+	end tell
+end tell
 ```
 
 ## Känd begränsning i utvecklingsmiljön
@@ -117,9 +132,9 @@ Koden bygger och typkontrollerar, men runtime-beteendet mot OmniFocus kunde inte
 
 Det som återstår att verifiera på macOS med OmniFocus installerat är:
 
-- att `window.open("omnifocus:///add?...", "_blank")` faktiskt triggar OmniFocus som väntat i Obsidian desktop
+- att `osascript` från Obsidian-pluginet fungerar lika stabilt som det manuella testet
 - att flera exporter i följd fungerar stabilt
-- att URL-öppning som lyckas lokalt motsvarar att uppgiften verkligen skapats i OmniFocus
+- att lyckad AppleScript-körning motsvarar att uppgiften verkligen skapats i OmniFocus
 
 ## Runtime-guard i pluginet
 
@@ -127,7 +142,7 @@ Nuvarande plugin stoppar exporten tidigt med ett tydligt felmeddelande om någon
 
 - Obsidian kör inte som desktop-app
 - miljön är inte macOS
-- `window.open` saknas och URL-schemat kan därför inte öppnas
+- miljön kan inte köra AppleScript-export
 
 Det gör att användaren får ett begripligt fel innan några exportposter sparas lokalt.
 
@@ -222,9 +237,8 @@ Praktisk konsekvens i V1:
 
 För det här repot gäller följande tills vidare:
 
-- använd `omnifocus:///add`
-- skicka alltid `name`
-- skicka alltid `note`
-- skicka inte `project` i V1
-- förlita dig på att frånvaro av `project` betyder Inbox för V1-flödet
+- använd AppleScript för faktisk skapelse av Inbox-task
+- skicka alltid titel som `name` i AppleScript-egenskaperna
+- skicka alltid note som `note` i AppleScript-egenskaperna
+- skapa som `inbox task` i V1
 - håll dedupe lokalt i pluginets data i stället för att kräva callback eller OmniFocus-ID
