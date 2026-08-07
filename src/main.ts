@@ -1318,17 +1318,43 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     "repeat with taskId in argv",
     "try",
     "set matchedTask to first flattened task where its id is (contents of taskId)",
-    "set plannedEpoch to \"\"",
-    "set dueEpoch to \"\"",
+    "set plannedDateText to \"\"",
+    "set dueDateText to \"\"",
     "set deferDateValue to defer date of matchedTask",
     "if deferDateValue is not missing value then",
-    "set plannedEpoch to (round (deferDateValue - (date \"1/1/1970\"))) as text",
+    "set plannedYear to year of deferDateValue as text",
+    "set plannedMonthNumber to month of deferDateValue as integer",
+    "set plannedDayNumber to day of deferDateValue as integer",
+    "if plannedMonthNumber < 10 then",
+    "set plannedMonthText to \"0\" & plannedMonthNumber as text",
+    "else",
+    "set plannedMonthText to plannedMonthNumber as text",
+    "end if",
+    "if plannedDayNumber < 10 then",
+    "set plannedDayText to \"0\" & plannedDayNumber as text",
+    "else",
+    "set plannedDayText to plannedDayNumber as text",
+    "end if",
+    "set plannedDateText to plannedYear & \"-\" & plannedMonthText & \"-\" & plannedDayText",
     "end if",
     "set dueDateValue to due date of matchedTask",
     "if dueDateValue is not missing value then",
-    "set dueEpoch to (round (dueDateValue - (date \"1/1/1970\"))) as text",
+    "set dueYear to year of dueDateValue as text",
+    "set dueMonthNumber to month of dueDateValue as integer",
+    "set dueDayNumber to day of dueDateValue as integer",
+    "if dueMonthNumber < 10 then",
+    "set dueMonthText to \"0\" & dueMonthNumber as text",
+    "else",
+    "set dueMonthText to dueMonthNumber as text",
     "end if",
-    "set end of outputLines to ((id of matchedTask as text) & \"|\" & (completed of matchedTask as text) & \"|\" & plannedEpoch & \"|\" & dueEpoch)",
+    "if dueDayNumber < 10 then",
+    "set dueDayText to \"0\" & dueDayNumber as text",
+    "else",
+    "set dueDayText to dueDayNumber as text",
+    "end if",
+    "set dueDateText to dueYear & \"-\" & dueMonthText & \"-\" & dueDayText",
+    "end if",
+    "set end of outputLines to ((id of matchedTask as text) & \"|\" & (completed of matchedTask as text) & \"|\" & plannedDateText & \"|\" & dueDateText)",
     "on error",
     "set end of outputLines to ((contents of taskId) & \"|missing||\")",
     "end try",
@@ -1475,12 +1501,21 @@ function parseEpochSeconds(input: string | undefined): number | null {
     return null;
   }
 
-  const parsed = Number.parseInt(input.trim(), 10);
-  if (!Number.isFinite(parsed)) {
+  const trimmed = input.trim();
+  if (!trimmed) {
     return null;
   }
 
-  return parsed;
+  if (/^\d+$/.test(trimmed)) {
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  return parseDateTokenToEpochSeconds(trimmed);
 }
 
 function extractInlineFieldValue(input: string, fieldName: "planned" | "due"): string | null {
@@ -1595,19 +1630,21 @@ async function setOmniFocusTaskScheduling(taskId: string, plannedEpochSeconds: n
     "if plannedArg is \"\" then",
     "set defer date of matchedTask to missing value",
     "else",
-    "set defer date of matchedTask to ((date \"1/1/1970\") + (plannedArg as integer))",
+    "set plannedDateValue to (date plannedArg)",
+    "set defer date of matchedTask to plannedDateValue",
     "end if",
     "if dueArg is \"\" then",
     "set due date of matchedTask to missing value",
     "else",
-    "set due date of matchedTask to ((date \"1/1/1970\") + (dueArg as integer))",
+    "set dueDateValue to (date dueArg)",
+    "set due date of matchedTask to dueDateValue",
     "end if",
     "end tell",
     "end tell",
     "end run"
   ].join("\n");
 
-  await runAppleScript(script, [taskId, plannedEpochSeconds === null ? "" : String(plannedEpochSeconds), dueEpochSeconds === null ? "" : String(dueEpochSeconds)]);
+  await runAppleScript(script, [taskId, plannedEpochSeconds === null ? "" : formatEpochForAppleScriptDate(plannedEpochSeconds), dueEpochSeconds === null ? "" : formatEpochForAppleScriptDate(dueEpochSeconds)]);
 }
 
 function getIndentWidth(input: string): number {
