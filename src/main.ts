@@ -404,8 +404,12 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   }
 
   async collectUnfinishedTasks(): Promise<ParsedObsidianTask[]> {
-    const allTasks = await this.collectAllTasks();
-    return allTasks.filter((task) => !task.completed);
+    const markdownFiles = this.app.vault
+      .getMarkdownFiles()
+      .filter((file) => !this.isExcludedPath(file.path));
+
+    const parsedTaskTrees = await Promise.all(markdownFiles.map(async (file) => this.parseTasksFromFile(file)));
+    return parsedTaskTrees.flatMap((taskList) => taskList.filter((task) => !task.completed));
   }
 
   async collectAllTasks(): Promise<ParsedObsidianTask[]> {
