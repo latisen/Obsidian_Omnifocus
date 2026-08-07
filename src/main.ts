@@ -920,7 +920,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         const plannedForObsidian = obsidianPlanned ?? omniPlanned;
         const dueForObsidian = obsidianDue ?? omniDue;
         try {
-          await this.setObsidianTaskScheduling(obsidianTask, plannedForObsidian, dueForObsidian);
+          await this.setObsidianTaskScheduling(obsidianTask, plannedForObsidian, dueForObsidian, omniPlannedText, omniDueText);
           record.plannedEpochSeconds = plannedForObsidian;
           record.dueEpochSeconds = dueForObsidian;
           await this.savePluginData();
