@@ -1449,34 +1449,32 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     "on run argv",
     "set outputLines to {}",
     "tell application \"OmniFocus\"",
-    "tell default document",
     "repeat with taskId in argv",
     "try",
-    "set matchedTask to first flattened task where its id is (contents of taskId)",
-    "set plannedDateText to \"\"",
-    "set dueDateText to \"\"",
-    "set plannedDateValue to planned date of matchedTask",
-    "if plannedDateValue is not missing value then",
-    "  try",
-    "    set plannedDateText to (plannedDateValue as «class isot»)",
-    "  on error",
-    "    set plannedDateText to (plannedDateValue as text)",
-    "  end try",
-    "end if",
-    "set dueDateValue to due date of matchedTask",
-    "if dueDateValue is not missing value then",
-    "  try",
-    "    set dueDateText to (dueDateValue as «class isot»)",
-    "  on error",
-    "    set dueDateText to (dueDateValue as text)",
-    "  end try",
-    "end if",
-    "set end of outputLines to ((id of matchedTask as text) & \"|\" & (completed of matchedTask as text) & \"|\" & plannedDateText & \"|\" & dueDateText)",
-    "on error",
-    "set end of outputLines to ((contents of taskId) & \"|missing||\")",
+    "set jsCode to \"(() => {\" & linefeed & ¬",
+    "\"  const taskID = \" & quoted form of (contents of taskId) & \";\" & linefeed & ¬",
+    "\"  const task = Task.byIdentifier(taskID);\" & linefeed & ¬",
+    "\"  if (!task) {\" & linefeed & ¬",
+    "\"    return JSON.stringify({ missing: true });\" & linefeed & ¬",
+    "\"  }\" & linefeed & ¬",
+    "\"  const toIso = (value) => {\" & linefeed & ¬",
+    "\"    if (!value) return null;\" & linefeed & ¬",
+    "\"    try { return value.toISOString(); } catch (error) { return String(value); }\" & linefeed & ¬",
+    "\"  };\" & linefeed & ¬",
+    "\"  return JSON.stringify({\" & linefeed & ¬",
+    "\"    missing: false,\" & linefeed & ¬",
+    "\"    completed: !!task.completed,\" & linefeed & ¬",
+    "\"    plannedDate: toIso(task.plannedDate),\" & linefeed & ¬",
+    "\"    dueDate: toIso(task.dueDate)\" & linefeed & ¬",
+    "\"  });\" & linefeed & ¬",
+    "\"})();\"",
+    "set jsResult to evaluate javascript jsCode",
+    "set end of outputLines to ((contents of taskId) & tab & jsResult)",
+    "on error errorMessage number errorNumber",
+    "set errorPayload to \"{\\\"missing\\\":false,\\\"completed\\\":false,\\\"error\\\":\" & quoted form of (\"AppleScript \" & errorNumber & \": \" & errorMessage) & \"}\"",
+    "set end of outputLines to ((contents of taskId) & tab & errorPayload)",
     "end try",
     "end repeat",
-    "end tell",
     "end tell",
     "set AppleScript's text item delimiters to linefeed",
     "return outputLines as text",
@@ -1508,16 +1506,68 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [id, rawStatus, rawPlannedEpoch, rawDueEpoch] = line.split("|");
-      const normalizedStatus = (rawStatus ?? "missing").toLowerCase();
+      const tabIndex = line.indexOf("\t");
+      if (tabIndex <= 0) {
+        return {
+          id: "",
+          completed: false,
+          plannedEpochSeconds: null,
+          dueEpochSeconds: null,
+          plannedDateText: `<<ERR:Unexpected status line: ${line}>>`,
+          dueDateText: `<<ERR:Unexpected status line: ${line}>>`,
+          missing: false
+        };
+      }
+
+      const id = line.slice(0, tabIndex);
+      const payloadText = line.slice(tabIndex + 1);
+
+      let payload: {
+        missing?: boolean;
+        completed?: boolean;
+        plannedDate?: string | null;
+        dueDate?: string | null;
+        error?: string;
+      } = {};
+
+      try {
+        payload = JSON.parse(payloadText);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          id,
+          completed: false,
+          plannedEpochSeconds: null,
+          dueEpochSeconds: null,
+          plannedDateText: `<<ERR:Invalid JSON payload (${detail})>>`,
+          dueDateText: `<<ERR:Invalid JSON payload (${detail})>>`,
+          missing: false
+        };
+      }
+
+      if (payload.error) {
+        return {
+          id,
+          completed: false,
+          plannedEpochSeconds: null,
+          dueEpochSeconds: null,
+          plannedDateText: `<<ERR:${payload.error}>>`,
+          dueDateText: `<<ERR:${payload.error}>>`,
+          missing: false
+        };
+      }
+
+      const plannedRaw = typeof payload.plannedDate === "string" ? payload.plannedDate : null;
+      const dueRaw = typeof payload.dueDate === "string" ? payload.dueDate : null;
+
       return {
-        id: id ?? "",
-        completed: normalizedStatus === "true",
-        plannedEpochSeconds: parseEpochSeconds(rawPlannedEpoch),
-        dueEpochSeconds: parseEpochSeconds(rawDueEpoch),
-        plannedDateText: rawPlannedEpoch || null,
-        dueDateText: rawDueEpoch || null,
-        missing: normalizedStatus === "missing"
+        id,
+        completed: Boolean(payload.completed),
+        plannedEpochSeconds: parseEpochSeconds(plannedRaw ?? undefined),
+        dueEpochSeconds: parseEpochSeconds(dueRaw ?? undefined),
+        plannedDateText: plannedRaw,
+        dueDateText: dueRaw,
+        missing: Boolean(payload.missing)
       };
     });
 }
@@ -1756,21 +1806,17 @@ async function setOmniFocusTaskScheduling(taskId: string, plannedEpochSeconds: n
     "set plannedArg to item 2 of argv",
     "set dueArg to item 3 of argv",
     "tell application \"OmniFocus\"",
-    "tell default document",
-    "set matchedTask to first flattened task where its id is targetId",
-    "if plannedArg is \"\" then",
-    "set planned date of matchedTask to missing value",
-    "else",
-    "set plannedDateValue to (date plannedArg)",
-    "set planned date of matchedTask to plannedDateValue",
-    "end if",
-    "if dueArg is \"\" then",
-    "set due date of matchedTask to missing value",
-    "else",
-    "set dueDateValue to (date dueArg)",
-    "set due date of matchedTask to dueDateValue",
-    "end if",
-    "end tell",
+    "set jsCode to \"(() => {\" & linefeed & ¬",
+    "\"  const taskID = \" & quoted form of targetId & \";\" & linefeed & ¬",
+    "\"  const plannedArg = \" & quoted form of plannedArg & \";\" & linefeed & ¬",
+    "\"  const dueArg = \" & quoted form of dueArg & \";\" & linefeed & ¬",
+    "\"  const task = Task.byIdentifier(taskID);\" & linefeed & ¬",
+    "\"  if (!task) { throw new Error('Task not found: ' + taskID); }\" & linefeed & ¬",
+    "\"  task.plannedDate = plannedArg ? new Date(plannedArg) : null;\" & linefeed & ¬",
+    "\"  task.dueDate = dueArg ? new Date(dueArg) : null;\" & linefeed & ¬",
+    "\"  return 'ok';\" & linefeed & ¬",
+    "\"})();\"",
+    "return evaluate javascript jsCode",
     "end tell",
     "end run"
   ].join("\n");
