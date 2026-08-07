@@ -85,6 +85,8 @@ interface OmniFocusTaskStatus {
   dueEpochSeconds: number | null;
   plannedDateText: string | null;
   dueDateText: string | null;
+  projectName: string | null;
+  omniFocusTaskUrl: string | null;
   missing: boolean;
 }
 
@@ -900,6 +902,17 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       const omniPlannedText = status.plannedDateText ?? (omniPlanned === null ? null : formatEpochForObsidian(omniPlanned));
       const omniDueText = status.dueDateText ?? (omniDue === null ? null : formatEpochForObsidian(omniDue));
 
+      if (status.projectName || status.omniFocusTaskUrl) {
+        try {
+          await this.setObsidianTaskOmniMetadata(obsidianTask, status.projectName, status.omniFocusTaskUrl);
+        } catch (error) {
+          failedUpdates += 1;
+          const detail = error instanceof Error ? error.message : "Failed to update Obsidian task OmniFocus metadata.";
+          firstFailureMessage ??= detail;
+          this.appendSyncIssueForRecord(record, `Metadata sync failed: ${detail}`);
+        }
+      }
+
       const hasScheduleBaseline = hasRecordScheduleBaseline(record);
       if (!hasScheduleBaseline) {
         if (areEpochValuesEqual(obsidianPlanned, omniPlanned) && areEpochValuesEqual(obsidianDue, omniDue)) {
@@ -1084,6 +1097,10 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const omniPlanned = normalizeEpochSeconds(status.plannedEpochSeconds);
     const omniDue = normalizeEpochSeconds(status.dueEpochSeconds);
 
+    if (status.projectName || status.omniFocusTaskUrl) {
+      await this.setObsidianTaskOmniMetadata(currentTask, status.projectName, status.omniFocusTaskUrl);
+    }
+
     if (!hasAnyScheduleValue(omniPlanned, omniDue)) {
       return;
     }
@@ -1151,6 +1168,39 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const dueValue = normalizeOmniDateTextForObsidian(dueDateText) ?? formatEpochForObsidian(dueEpochSeconds);
     let updatedTaskBody = setInlineFieldValue(taskMatch[4], "planned", plannedValue);
     updatedTaskBody = setInlineFieldValue(updatedTaskBody, "due", dueValue);
+
+    lines[lineIndex] = `${taskMatch[1]}${taskMatch[2]}${updatedTaskBody}`;
+    await this.app.vault.modify(file, lines.join("\n"));
+  }
+
+  async setObsidianTaskOmniMetadata(task: ParsedObsidianTask, projectName: string | null, omniFocusTaskUrl: string | null): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(task.sourcePath);
+    if (!(file instanceof TFile)) {
+      throw new Error(`Could not find Obsidian file: ${task.sourcePath}`);
+    }
+
+    const content = await this.app.vault.read(file);
+    const lines = content.split(/\r?\n/);
+    const lineIndex = task.sourceLine - 1;
+
+    if (lineIndex < 0 || lineIndex >= lines.length) {
+      throw new Error(`Invalid source line ${task.sourceLine} for ${task.sourcePath}`);
+    }
+
+    const line = lines[lineIndex];
+    const taskMatch = line.match(TASK_LINE_PATTERN);
+    if (!taskMatch) {
+      throw new Error(`Could not locate task line at ${task.sourcePath}:${task.sourceLine}`);
+    }
+
+    const normalizedProject = normalizeProjectValueForObsidian(projectName);
+    const normalizedOmniFocusUrl = normalizeOmniFocusTaskUrlForObsidian(omniFocusTaskUrl);
+    let updatedTaskBody = setInlineFieldValue(taskMatch[4], "project", normalizedProject);
+    updatedTaskBody = setInlineFieldValue(updatedTaskBody, "OF", normalizedOmniFocusUrl);
+
+    if (updatedTaskBody === taskMatch[4]) {
+      return;
+    }
 
     lines[lineIndex] = `${taskMatch[1]}${taskMatch[2]}${updatedTaskBody}`;
     await this.app.vault.modify(file, lines.join("\n"));
@@ -1461,11 +1511,17 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     "\"    if (!value) return null;\" & linefeed & ¬",
     "\"    try { return value.toISOString(); } catch (error) { return String(value); }\" & linefeed & ¬",
     "\"  };\" & linefeed & ¬",
+    "\"  const objectID = (value) => (value && value.id ? value.id.primaryKey : null);\" & linefeed & ¬",
+    "\"  const project = task.containingProject || task.project;\" & linefeed & ¬",
+    "\"  const projectName = project ? project.name : null;\" & linefeed & ¬",
+    "\"  const taskUrl = objectID(task) ? ('omnifocus:///task/' + objectID(task)) : null;\" & linefeed & ¬",
     "\"  return JSON.stringify({\" & linefeed & ¬",
     "\"    missing: false,\" & linefeed & ¬",
     "\"    completed: !!task.completed,\" & linefeed & ¬",
     "\"    plannedDate: toIso(task.plannedDate),\" & linefeed & ¬",
-    "\"    dueDate: toIso(task.dueDate)\" & linefeed & ¬",
+    "\"    dueDate: toIso(task.dueDate),\" & linefeed & ¬",
+    "\"    projectName: projectName,\" & linefeed & ¬",
+    "\"    taskUrl: taskUrl\" & linefeed & ¬",
     "\"  });\" & linefeed & ¬",
     "\"})();\"",
     "set jsResult to evaluate javascript jsCode",
@@ -1493,6 +1549,8 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
       dueEpochSeconds: null,
       plannedDateText: `<<ERR:${detail}>>`,
       dueDateText: `<<ERR:${detail}>>`,
+      projectName: null,
+      omniFocusTaskUrl: null,
       missing: false
     }));
   }
@@ -1515,6 +1573,8 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
           dueEpochSeconds: null,
           plannedDateText: `<<ERR:Unexpected status line: ${line}>>`,
           dueDateText: `<<ERR:Unexpected status line: ${line}>>`,
+          projectName: null,
+          omniFocusTaskUrl: null,
           missing: false
         };
       }
@@ -1527,6 +1587,8 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
         completed?: boolean;
         plannedDate?: string | null;
         dueDate?: string | null;
+        projectName?: string | null;
+        taskUrl?: string | null;
         error?: string;
       } = {};
 
@@ -1541,6 +1603,8 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
           dueEpochSeconds: null,
           plannedDateText: `<<ERR:Invalid JSON payload (${detail})>>`,
           dueDateText: `<<ERR:Invalid JSON payload (${detail})>>`,
+          projectName: null,
+          omniFocusTaskUrl: null,
           missing: false
         };
       }
@@ -1553,12 +1617,16 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
           dueEpochSeconds: null,
           plannedDateText: `<<ERR:${payload.error}>>`,
           dueDateText: `<<ERR:${payload.error}>>`,
+          projectName: null,
+          omniFocusTaskUrl: null,
           missing: false
         };
       }
 
       const plannedRaw = typeof payload.plannedDate === "string" ? payload.plannedDate : null;
       const dueRaw = typeof payload.dueDate === "string" ? payload.dueDate : null;
+      const projectNameRaw = typeof payload.projectName === "string" ? payload.projectName : null;
+      const taskUrlRaw = typeof payload.taskUrl === "string" ? payload.taskUrl : null;
 
       return {
         id,
@@ -1567,6 +1635,8 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
         dueEpochSeconds: parseEpochSeconds(dueRaw ?? undefined),
         plannedDateText: plannedRaw,
         dueDateText: dueRaw,
+        projectName: projectNameRaw,
+        omniFocusTaskUrl: taskUrlRaw,
         missing: Boolean(payload.missing)
       };
     });
@@ -1711,13 +1781,39 @@ function removeInlineDateFields(input: string): string {
   return withoutDue.replace(/\s{2,}/g, " ").trim();
 }
 
-function setInlineFieldValue(input: string, fieldName: "planned" | "due", value: string | null): string {
-  const stripped = input.replace(new RegExp(`(^|\\s)${fieldName}::[^\\s]+`, "gi"), "$1").replace(/\s{2,}/g, " ").trim();
+function setInlineFieldValue(input: string, fieldName: "planned" | "due" | "project" | "OF", value: string | null): string {
+  const stripped = input
+    .replace(new RegExp(`(^|\\s)${fieldName}::(?:\"[^\"]*\"|[^\\s]+)`, "gi"), "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   if (!value) {
     return stripped;
   }
 
-  return stripped.length > 0 ? `${stripped} ${fieldName}::${value}` : `${fieldName}::${value}`;
+  const encodedValue = /\s/.test(value) ? `"${value.replace(/"/g, "'")}"` : value;
+  return stripped.length > 0 ? `${stripped} ${fieldName}::${encodedValue}` : `${fieldName}::${encodedValue}`;
+}
+
+function normalizeProjectValueForObsidian(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeOmniFocusTaskUrlForObsidian(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("<<ERR:")) {
+    return null;
+  }
+
+  return trimmed;
 }
 
 function parseDateTokenToEpochSeconds(token: string | null): number | null {
