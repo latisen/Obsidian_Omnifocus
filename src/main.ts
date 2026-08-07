@@ -866,6 +866,41 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         continue;
       }
 
+      const shouldPropagateOmniToObsidian = (obsidianPlanned === null && omniPlanned !== null) || (obsidianDue === null && omniDue !== null);
+      const shouldPropagateObsidianToOmni = (obsidianPlanned !== null && omniPlanned === null) || (obsidianDue !== null && omniDue === null);
+
+      if (shouldPropagateOmniToObsidian) {
+        const plannedForObsidian = obsidianPlanned ?? omniPlanned;
+        const dueForObsidian = obsidianDue ?? omniDue;
+        try {
+          await this.setObsidianTaskScheduling(obsidianTask, plannedForObsidian, dueForObsidian);
+          record.plannedEpochSeconds = plannedForObsidian;
+          record.dueEpochSeconds = dueForObsidian;
+          await this.savePluginData();
+          updatedScheduleInObsidian += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to sync OmniFocus schedule into Obsidian.";
+        }
+        continue;
+      }
+
+      if (shouldPropagateObsidianToOmni) {
+        const plannedForOmni = obsidianPlanned ?? omniPlanned;
+        const dueForOmni = obsidianDue ?? omniDue;
+        try {
+          await setOmniFocusTaskScheduling(record.omniFocusId, plannedForOmni, dueForOmni);
+          record.plannedEpochSeconds = plannedForOmni;
+          record.dueEpochSeconds = dueForOmni;
+          await this.savePluginData();
+          updatedScheduleInOmniFocus += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to sync Obsidian schedule into OmniFocus.";
+        }
+        continue;
+      }
+
       const obsidianChangedFromRecord = !areEpochValuesEqual(obsidianPlanned, recordPlanned) || !areEpochValuesEqual(obsidianDue, recordDue);
       const omniChangedFromRecord = !areEpochValuesEqual(omniPlanned, recordPlanned) || !areEpochValuesEqual(omniDue, recordDue);
 
