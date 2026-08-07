@@ -1147,8 +1147,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       throw new Error(`Could not locate task line at ${task.sourcePath}:${task.sourceLine}`);
     }
 
-    const plannedValue = plannedDateText ?? formatEpochForObsidian(plannedEpochSeconds);
-    const dueValue = dueDateText ?? formatEpochForObsidian(dueEpochSeconds);
+    const plannedValue = normalizeOmniDateTextForObsidian(plannedDateText) ?? formatEpochForObsidian(plannedEpochSeconds);
+    const dueValue = normalizeOmniDateTextForObsidian(dueDateText) ?? formatEpochForObsidian(dueEpochSeconds);
     let updatedTaskBody = setInlineFieldValue(taskMatch[4], "planned", plannedValue);
     updatedTaskBody = setInlineFieldValue(updatedTaskBody, "due", dueValue);
 
@@ -1778,6 +1778,35 @@ function formatEpochForAppleScriptDate(epochSeconds: number | null): string {
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
+
+function normalizeOmniDateTextForObsidian(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("<<ERR:")) {
+    return null;
+  }
+
+  const isoDatePrefix = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDatePrefix) {
+    return isoDatePrefix[1];
+  }
+
+  const parsedEpoch = parseDateTokenToEpochSeconds(trimmed);
+  if (parsedEpoch === null) {
+    return null;
+  }
+
+  const formatted = formatEpochForObsidian(parsedEpoch);
+  if (!formatted) {
+    return null;
+  }
+
+  return formatted.slice(0, 10);
+}
+
 function normalizeEpochSeconds(value: number | null | undefined): number | null {
   if (!Number.isFinite(value ?? null)) {
     return null;
