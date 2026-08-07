@@ -56,6 +56,11 @@ interface SyncIssue {
   reason: string;
 }
 
+interface SyncFailureContext {
+  task: PreparedOmniFocusTask;
+  reason: string;
+}
+
 interface SyncSummary {
   dedupeSummary: DedupeSummary;
   createdTasks: PreparedOmniFocusTask[];
@@ -143,6 +148,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   };
   autoFullSyncIntervalId: number | null = null;
   autoFullSyncInProgress = false;
+  activeSyncIssues: SyncIssue[] = [];
 
   override async onload(): Promise<void> {
     await this.loadPluginData();
@@ -456,7 +462,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const parsedTaskByFingerprint = new Map(parsedTasks.map((task) => [this.createTaskFingerprint(task), task]));
     const preparedTasks = parsedTasks.map((task) => this.prepareTaskForOmniFocus(task));
     const dedupeSummary = this.buildDedupeSummary(preparedTasks);
+    this.activeSyncIssues = [];
     const syncIssues: SyncIssue[] = this.createDedupeSyncIssues(dedupeSummary);
+    syncIssues.forEach((issue) => this.activeSyncIssues.push(issue));
 
     if (this.settings.dryRun) {
       return this.finalizeSyncSummary({
@@ -484,6 +492,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
     const createdTasks: PreparedOmniFocusTask[] = [];
     const failedTasks: PreparedOmniFocusTask[] = [];
+    const syncFailures: SyncFailureContext[] = [];
     let firstFailureMessage: string | undefined;
 
     for (const task of dedupeSummary.alreadyExportedTasks) {
@@ -500,7 +509,10 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       try {
         await this.reconcileExistingTaskSchedule(task, currentTask, record);
       } catch (error) {
-        firstFailureMessage ??= error instanceof Error ? error.message : "Failed to reconcile existing task schedule.";
+        const detail = error instanceof Error ? error.message : "Failed to reconcile existing task schedule.";
+        syncFailures.push({ task, reason: detail });
+        this.appendSyncIssue(task, detail);
+        firstFailureMessage ??= detail;
       }
     }
 
@@ -517,14 +529,23 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       const exported = await this.exportTaskToOmniFocus(task);
       if (!exported.ok) {
         failedTasks.push(task);
-        firstFailureMessage ??= exported.errorMessage;
-        syncIssues.push(this.createSyncIssue(task, `Export failed: ${exported.errorMessage ?? "Unknown AppleScript error."}`));
+        const detail = exported.errorMessage ?? "Unknown AppleScript error.";
+        syncFailures.push({ task, reason: detail });
+        this.appendSyncIssue(task, `Export failed: ${detail}`);
+        firstFailureMessage ??= detail;
+        syncIssues.push(this.createSyncIssue(task, `Export failed: ${detail}`));
         continue;
       }
 
       await this.rememberExport(this.createExportRecord(task, exported.omniFocusId));
       createdTasks.push(task);
     }
+
+    syncFailures.forEach((failure) => {
+      const issue = this.createSyncIssue(failure.task, `Sync failure: ${failure.reason}`);
+      syncIssues.push(issue);
+      this.activeSyncIssues.push(issue);
+    });
 
     return this.finalizeSyncSummary({
       dedupeSummary,
@@ -730,6 +751,19 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     }
   }
 
+  appendSyncIssue(task: PreparedOmniFocusTask, reason: string): void {
+    this.activeSyncIssues.push(this.createSyncIssue(task, reason));
+  }
+
+  appendSyncIssueForRecord(record: ExportRecord, reason: string): void {
+    this.activeSyncIssues.push({
+      title: record.title,
+      sourcePath: record.sourcePath,
+      sourceLine: record.sourceLine ?? 0,
+      reason
+    });
+  }
+
   async syncCompletionStateBidirectional(): Promise<CompletionSyncSummary> {
     const runtimeValidationError = this.validateOmniFocusRuntime();
     if (runtimeValidationError) {
@@ -848,7 +882,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
             updatedScheduleInObsidian += 1;
           } catch (error) {
             failedUpdates += 1;
-            firstFailureMessage ??= error instanceof Error ? error.message : "Failed to initialize Obsidian task schedule from OmniFocus.";
+            const detail = error instanceof Error ? error.message : "Failed to initialize Obsidian task schedule from OmniFocus.";
+            firstFailureMessage ??= detail;
+            this.appendSyncIssueForRecord(record, `Schedule sync failed: ${detail}`);
           }
           continue;
         }
@@ -861,7 +897,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
           updatedScheduleInOmniFocus += 1;
         } catch (error) {
           failedUpdates += 1;
-          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to initialize OmniFocus task schedule from Obsidian.";
+          const detail = error instanceof Error ? error.message : "Failed to initialize OmniFocus task schedule from Obsidian.";
+          firstFailureMessage ??= detail;
+          this.appendSyncIssueForRecord(record, `Schedule sync failed: ${detail}`);
         }
         continue;
       }
@@ -925,7 +963,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
           updatedScheduleInOmniFocus += 1;
         } catch (error) {
           failedUpdates += 1;
-          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update OmniFocus task schedule.";
+          const detail = error instanceof Error ? error.message : "Failed to update OmniFocus task schedule.";
+          firstFailureMessage ??= detail;
+          this.appendSyncIssueForRecord(record, `Schedule sync failed: ${detail}`);
         }
         continue;
       }
@@ -939,7 +979,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
           updatedScheduleInObsidian += 1;
         } catch (error) {
           failedUpdates += 1;
-          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update Obsidian task schedule.";
+          const detail = error instanceof Error ? error.message : "Failed to update Obsidian task schedule.";
+          firstFailureMessage ??= detail;
+          this.appendSyncIssueForRecord(record, `Schedule sync failed: ${detail}`);
         }
       }
     }
@@ -961,6 +1003,25 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   async runFullVaultSync(): Promise<FullSyncSummary> {
     const exportSummary = await this.syncTasksToOmniFocus();
     const completionSummary = await this.syncCompletionStateBidirectional();
+
+    if (this.activeSyncIssues.length > 0) {
+      const combinedIssues = [...this.activeSyncIssues];
+      await this.writeSyncIssuesReport({
+        dedupeSummary: {
+          totalPrepared: exportSummary.dedupeSummary.totalPrepared,
+          uniqueTasks: exportSummary.dedupeSummary.uniqueTasks,
+          duplicateInScanCount: exportSummary.dedupeSummary.duplicateInScanCount,
+          duplicateInScanTasks: exportSummary.dedupeSummary.duplicateInScanTasks,
+          alreadyExportedTasks: exportSummary.dedupeSummary.alreadyExportedTasks,
+          pendingExportTasks: exportSummary.dedupeSummary.pendingExportTasks
+        },
+        createdTasks: exportSummary.createdTasks,
+        failedTasks: exportSummary.failedTasks,
+        dryRun: exportSummary.dryRun,
+        firstFailureMessage: exportSummary.firstFailureMessage,
+        errorMessage: exportSummary.errorMessage
+      }, combinedIssues);
+    }
 
     return {
       exportSummary,
