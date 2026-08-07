@@ -83,6 +83,8 @@ interface OmniFocusTaskStatus {
   completed: boolean;
   plannedEpochSeconds: number | null;
   dueEpochSeconds: number | null;
+  plannedDateText: string | null;
+  dueDateText: string | null;
   missing: boolean;
 }
 
@@ -865,6 +867,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       const obsidianDue = normalizeEpochSeconds(obsidianTask.dueEpochSeconds);
       const omniPlanned = normalizeEpochSeconds(status.plannedEpochSeconds);
       const omniDue = normalizeEpochSeconds(status.dueEpochSeconds);
+      const omniPlannedText = status.plannedDateText ?? (omniPlanned === null ? null : formatEpochForObsidian(omniPlanned));
+      const omniDueText = status.dueDateText ?? (omniDue === null ? null : formatEpochForObsidian(omniDue));
 
       const hasScheduleBaseline = hasRecordScheduleBaseline(record);
       if (!hasScheduleBaseline) {
@@ -880,7 +884,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
         if (omniHasAnySchedule || !obsidianHasAnySchedule) {
           try {
-            await this.setObsidianTaskScheduling(obsidianTask, omniPlanned, omniDue);
+            await this.setObsidianTaskScheduling(obsidianTask, omniPlanned, omniDue, omniPlannedText, omniDueText);
             record.plannedEpochSeconds = omniPlanned;
             record.dueEpochSeconds = omniDue;
             await this.savePluginData();
@@ -977,7 +981,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
       if (omniChangedFromRecord) {
         try {
-          await this.setObsidianTaskScheduling(obsidianTask, omniPlanned, omniDue);
+          await this.setObsidianTaskScheduling(obsidianTask, omniPlanned, omniDue, omniPlannedText, omniDueText);
           record.plannedEpochSeconds = omniPlanned;
           record.dueEpochSeconds = omniDue;
           await this.savePluginData();
@@ -1062,7 +1066,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       return;
     }
 
-    await this.setObsidianTaskScheduling(currentTask, omniPlanned, omniDue);
+    await this.setObsidianTaskScheduling(currentTask, omniPlanned, omniDue, status.plannedDateText ?? (omniPlanned === null ? null : formatEpochForObsidian(omniPlanned)), status.dueDateText ?? (omniDue === null ? null : formatEpochForObsidian(omniDue)));
     record.plannedEpochSeconds = omniPlanned;
     record.dueEpochSeconds = omniDue;
     await this.savePluginData();
@@ -1093,7 +1097,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     await this.app.vault.modify(file, lines.join("\n"));
   }
 
-  async setObsidianTaskScheduling(task: ParsedObsidianTask, plannedEpochSeconds: number | null, dueEpochSeconds: number | null): Promise<void> {
+  async setObsidianTaskScheduling(task: ParsedObsidianTask, plannedEpochSeconds: number | null, dueEpochSeconds: number | null, plannedDateText: string | null = null, dueDateText: string | null = null): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(task.sourcePath);
     if (!(file instanceof TFile)) {
       throw new Error(`Could not find Obsidian file: ${task.sourcePath}`);
@@ -1113,8 +1117,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       throw new Error(`Could not locate task line at ${task.sourcePath}:${task.sourceLine}`);
     }
 
-    const plannedValue = formatEpochForObsidian(plannedEpochSeconds);
-    const dueValue = formatEpochForObsidian(dueEpochSeconds);
+    const plannedValue = plannedDateText ?? formatEpochForObsidian(plannedEpochSeconds);
+    const dueValue = dueDateText ?? formatEpochForObsidian(dueEpochSeconds);
     let updatedTaskBody = setInlineFieldValue(taskMatch[4], "planned", plannedValue);
     updatedTaskBody = setInlineFieldValue(updatedTaskBody, "due", dueValue);
 
@@ -1484,6 +1488,8 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
         completed: normalizedStatus === "true",
         plannedEpochSeconds: parseEpochSeconds(rawPlannedEpoch),
         dueEpochSeconds: parseEpochSeconds(rawDueEpoch),
+        plannedDateText: rawPlannedEpoch || null,
+        dueDateText: rawDueEpoch || null,
         missing: normalizedStatus === "missing"
       };
     });
