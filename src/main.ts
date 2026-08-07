@@ -803,6 +803,45 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       const omniPlanned = normalizeEpochSeconds(status.plannedEpochSeconds);
       const omniDue = normalizeEpochSeconds(status.dueEpochSeconds);
 
+      const hasScheduleBaseline = hasRecordScheduleBaseline(record);
+      if (!hasScheduleBaseline) {
+        if (areEpochValuesEqual(obsidianPlanned, omniPlanned) && areEpochValuesEqual(obsidianDue, omniDue)) {
+          record.plannedEpochSeconds = obsidianPlanned;
+          record.dueEpochSeconds = obsidianDue;
+          await this.savePluginData();
+          continue;
+        }
+
+        const omniHasAnySchedule = hasAnyScheduleValue(omniPlanned, omniDue);
+        const obsidianHasAnySchedule = hasAnyScheduleValue(obsidianPlanned, obsidianDue);
+
+        if (omniHasAnySchedule || !obsidianHasAnySchedule) {
+          try {
+            await this.setObsidianTaskScheduling(obsidianTask, omniPlanned, omniDue);
+            record.plannedEpochSeconds = omniPlanned;
+            record.dueEpochSeconds = omniDue;
+            await this.savePluginData();
+            updatedScheduleInObsidian += 1;
+          } catch (error) {
+            failedUpdates += 1;
+            firstFailureMessage ??= error instanceof Error ? error.message : "Failed to initialize Obsidian task schedule from OmniFocus.";
+          }
+          continue;
+        }
+
+        try {
+          await setOmniFocusTaskScheduling(record.omniFocusId, obsidianPlanned, obsidianDue);
+          record.plannedEpochSeconds = obsidianPlanned;
+          record.dueEpochSeconds = obsidianDue;
+          await this.savePluginData();
+          updatedScheduleInOmniFocus += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to initialize OmniFocus task schedule from Obsidian.";
+        }
+        continue;
+      }
+
       const obsidianChangedFromRecord = !areEpochValuesEqual(obsidianPlanned, recordPlanned) || !areEpochValuesEqual(obsidianDue, recordDue);
       const omniChangedFromRecord = !areEpochValuesEqual(omniPlanned, recordPlanned) || !areEpochValuesEqual(omniDue, recordDue);
 
@@ -1462,6 +1501,15 @@ function normalizeEpochSeconds(value: number | null | undefined): number | null 
 
 function areEpochValuesEqual(left: number | null, right: number | null): boolean {
   return left === right;
+}
+
+function hasAnyScheduleValue(plannedEpochSeconds: number | null, dueEpochSeconds: number | null): boolean {
+  return plannedEpochSeconds !== null || dueEpochSeconds !== null;
+}
+
+function hasRecordScheduleBaseline(record: ExportRecord): boolean {
+  return Object.prototype.hasOwnProperty.call(record, "plannedEpochSeconds")
+    || Object.prototype.hasOwnProperty.call(record, "dueEpochSeconds");
 }
 
 async function setOmniFocusTaskScheduling(taskId: string, plannedEpochSeconds: number | null, dueEpochSeconds: number | null): Promise<void> {
