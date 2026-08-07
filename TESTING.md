@@ -40,6 +40,8 @@ Pluginet använder dessa kommandon:
 
 - `Sync unfinished tasks to OmniFocus Inbox`
 - `Clear exported task cache`
+- `Sync completed state between Obsidian and OmniFocus`
+- `Test OmniFocus AppleScript bridge`
 
 Öppna Command Palette i Obsidian och kör kommandona därifrån.
 
@@ -218,6 +220,24 @@ Förväntat resultat i V1:
 4. Slå av `Dry run`.
 5. Kör synken igen.
 6. Bekräfta i OmniFocus att child-tasken skapades som subtask och inte som fristående Inbox-task.
+
+## Test av tvåvägs completion-sync
+
+För att tvåvägssynk ska fungera måste exportposten innehålla OmniFocus-ID.
+
+Om du har gamla exporter från tidigare pluginversion:
+
+1. Kör `Clear exported task cache`.
+2. Kör en ny skarp sync så tasks exporteras om och får OmniFocus-ID i pluginets state.
+
+Sedan testar du tvåvägs completion:
+
+1. Markera en exporterad task som klar i OmniFocus.
+2. Kör `Sync completed state between Obsidian and OmniFocus`.
+3. Bekräfta att motsvarande task blir `[x]` i Obsidian.
+4. Avmarkera en annan task i OmniFocus (om den var klar) och markera den som klar i Obsidian i stället.
+5. Kör `Sync completed state between Obsidian and OmniFocus` igen.
+6. Bekräfta att OmniFocus uppdateras till klar-status.
 
 ## Vad du bör rapportera tillbaka efter varje test
 

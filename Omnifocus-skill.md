@@ -25,6 +25,23 @@ V1-beteende:
 - vid export skapas child-tasken som subtask i OmniFocus via AppleScript
 - varje task eller subtask får sin egen note och egen Obsidian-backlink
 
+## Tvåvägs klarmarkering (V1+)
+
+Pluginet har nu ett separat kommando för completion-sync mellan systemen:
+
+- `Sync completed state between Obsidian and OmniFocus`
+
+Beteende:
+
+- för exporterade tasks med sparat OmniFocus-ID jämförs completion-status i båda systemen
+- om OmniFocus är klar men Obsidian inte är klar, markeras tasken som klar i Obsidian
+- om Obsidian är klar men OmniFocus inte är klar, markeras tasken som klar i OmniFocus
+
+Nuvarande begränsning:
+
+- completion-sync kräver exporter som skapats med versionen som sparar OmniFocus-ID
+- äldre exportposter utan OmniFocus-ID behöver exporteras om (rensa cache och synka igen)
+
 ## Syfte i det här projektet
 
 Pluginet ska skapa nya tasks i OmniFocus från Obsidian-tasks.

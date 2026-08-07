@@ -8,11 +8,13 @@ interface ExportRecord {
   sourceLine?: number;
   title: string;
   note: string;
+  omniFocusId?: string;
 }
 
 interface ParsedObsidianTask {
   title: string;
   note: string;
+  completed: boolean;
   sourcePath: string;
   sourceLine: number;
   headingPath: string[];
@@ -52,6 +54,23 @@ interface SyncSummary {
 interface OmniFocusExportResult {
   ok: boolean;
   errorMessage?: string;
+  omniFocusId?: string;
+}
+
+interface OmniFocusTaskStatus {
+  id: string;
+  completed: boolean;
+  missing: boolean;
+}
+
+interface CompletionSyncSummary {
+  compared: number;
+  updatedInObsidian: number;
+  updatedInOmniFocus: number;
+  missingInOmniFocus: number;
+  missingInObsidian: number;
+  failedUpdates: number;
+  firstFailureMessage?: string;
 }
 
 interface OmniFocusPluginState {
@@ -118,6 +137,15 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       callback: async () => {
         const result = await this.testOmniFocusAppleScriptBridge();
         new Notice(result.ok ? "OmniFocus AppleScript bridge is working." : `OmniFocus AppleScript bridge failed: ${result.errorMessage ?? "Unknown error."}` , 10000);
+      }
+    });
+
+    this.addCommand({
+      id: "sync-completed-state-bidirectional",
+      name: "Sync completed state between Obsidian and OmniFocus",
+      callback: async () => {
+        const summary = await this.syncCompletionStateBidirectional();
+        new Notice(this.createCompletionSyncNotice(summary), 10000);
       }
     });
 
@@ -245,7 +273,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         continue;
       }
 
-      await this.rememberExport(task);
+      await this.rememberExport(this.createExportRecord(task, exported.omniFocusId));
       createdTasks.push(task);
     }
 
@@ -259,12 +287,17 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   }
 
   async collectUnfinishedTasks(): Promise<ParsedObsidianTask[]> {
+    const allTasks = await this.collectAllTasks();
+    return allTasks.filter((task) => !task.completed);
+  }
+
+  async collectAllTasks(): Promise<ParsedObsidianTask[]> {
     const markdownFiles = this.app.vault
       .getMarkdownFiles()
       .filter((file) => !this.isExcludedPath(file.path));
 
-    const parsedTaskLists = await Promise.all(markdownFiles.map(async (file) => this.parseTasksFromFile(file)));
-    return parsedTaskLists.flat();
+    const parsedTaskTrees = await Promise.all(markdownFiles.map(async (file) => this.parseTasksFromFile(file)));
+    return parsedTaskTrees.flatMap((taskList) => taskList.flatMap((task) => flattenParsedTaskTree(task)));
   }
 
   isExcludedPath(path: string): boolean {
@@ -313,8 +346,11 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
   async exportTaskToOmniFocus(task: PreparedOmniFocusTask): Promise<OmniFocusExportResult> {
     try {
-      await runOmniFocusAppleScript(task);
-      return { ok: true };
+      const omniFocusId = await runOmniFocusAppleScript(task);
+      return {
+        ok: true,
+        omniFocusId
+      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown AppleScript error.";
       console.error("Failed to create OmniFocus task via AppleScript", { error, task });
@@ -352,6 +388,123 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     }
   }
 
+  async syncCompletionStateBidirectional(): Promise<CompletionSyncSummary> {
+    const runtimeValidationError = this.validateOmniFocusRuntime();
+    if (runtimeValidationError) {
+      return {
+        compared: 0,
+        updatedInObsidian: 0,
+        updatedInOmniFocus: 0,
+        missingInOmniFocus: 0,
+        missingInObsidian: 0,
+        failedUpdates: 1,
+        firstFailureMessage: runtimeValidationError
+      };
+    }
+
+    const records = Object.values(this.state.exportedTasks).filter((record) => Boolean(record.omniFocusId));
+    if (records.length === 0) {
+      return {
+        compared: 0,
+        updatedInObsidian: 0,
+        updatedInOmniFocus: 0,
+        missingInOmniFocus: 0,
+        missingInObsidian: 0,
+        failedUpdates: 0
+      };
+    }
+
+    const statuses = await fetchOmniFocusStatuses(records.map((record) => record.omniFocusId!).filter(Boolean));
+    const statusMap = new Map(statuses.map((status) => [status.id, status]));
+    const obsidianTasks = await this.collectAllTasks();
+    const taskMap = new Map(obsidianTasks.map((task) => [this.createTaskFingerprint(task), task]));
+
+    let updatedInObsidian = 0;
+    let updatedInOmniFocus = 0;
+    let missingInOmniFocus = 0;
+    let missingInObsidian = 0;
+    let failedUpdates = 0;
+    let firstFailureMessage: string | undefined;
+
+    for (const record of records) {
+      const status = record.omniFocusId ? statusMap.get(record.omniFocusId) : undefined;
+      if (!status || status.missing) {
+        missingInOmniFocus += 1;
+        continue;
+      }
+
+      const obsidianTask = taskMap.get(record.fingerprint);
+      if (!obsidianTask) {
+        missingInObsidian += 1;
+        continue;
+      }
+
+      if (status.completed && !obsidianTask.completed) {
+        try {
+          await this.setObsidianTaskCompletion(obsidianTask, true);
+          updatedInObsidian += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update Obsidian task completion.";
+        }
+        continue;
+      }
+
+      if (!status.completed && obsidianTask.completed && record.omniFocusId) {
+        try {
+          await setOmniFocusTaskCompletion(record.omniFocusId, true);
+          updatedInOmniFocus += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update OmniFocus task completion.";
+        }
+      }
+    }
+
+    return {
+      compared: records.length,
+      updatedInObsidian,
+      updatedInOmniFocus,
+      missingInOmniFocus,
+      missingInObsidian,
+      failedUpdates,
+      firstFailureMessage
+    };
+  }
+
+  async setObsidianTaskCompletion(task: ParsedObsidianTask, completed: boolean): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(task.sourcePath);
+    if (!(file instanceof TFile)) {
+      throw new Error(`Could not find Obsidian file: ${task.sourcePath}`);
+    }
+
+    const content = await this.app.vault.read(file);
+    const lines = content.split(/\r?\n/);
+    const lineIndex = task.sourceLine - 1;
+
+    if (lineIndex < 0 || lineIndex >= lines.length) {
+      throw new Error(`Invalid source line ${task.sourceLine} for ${task.sourcePath}`);
+    }
+
+    const line = lines[lineIndex];
+    const taskMatch = line.match(TASK_LINE_PATTERN);
+    if (!taskMatch) {
+      throw new Error(`Could not locate task checkbox at ${task.sourcePath}:${task.sourceLine}`);
+    }
+
+    const nextStatus = completed ? "x" : " ";
+    lines[lineIndex] = `${taskMatch[1]}${taskMatch[2].replace(`[${taskMatch[3]}]`, `[${nextStatus}]`)}${taskMatch[4]}`;
+    await this.app.vault.modify(file, lines.join("\n"));
+  }
+
+  createCompletionSyncNotice(summary: CompletionSyncSummary): string {
+    if (summary.firstFailureMessage) {
+      return `Completion sync: compared ${summary.compared}, updated Obsidian ${summary.updatedInObsidian}, updated OmniFocus ${summary.updatedInOmniFocus}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}. First error: ${summary.firstFailureMessage}`;
+    }
+
+    return `Completion sync: compared ${summary.compared}, updated Obsidian ${summary.updatedInObsidian}, updated OmniFocus ${summary.updatedInOmniFocus}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}.`;
+  }
+
   createSyncNotice(summary: SyncSummary): string {
     const { dedupeSummary } = summary;
 
@@ -374,14 +527,15 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.`;
   }
 
-  createExportRecord(task: PreparedOmniFocusTask): ExportRecord {
+  createExportRecord(task: PreparedOmniFocusTask, omniFocusId?: string): ExportRecord {
     return {
       fingerprint: task.fingerprint,
       createdAt: new Date().toISOString(),
       sourcePath: task.sourcePath,
       sourceLine: task.sourceLine,
       title: task.title,
-      note: task.note
+      note: task.note,
+      omniFocusId
     };
   }
 
@@ -445,7 +599,7 @@ function parseMarkdownTasks(content: string, sourcePath: string): ParsedObsidian
       continue;
     }
 
-    if (isCompletedTask(taskMatch[3]) || taskMatch[4].trim().length === 0) {
+    if (taskMatch[4].trim().length === 0) {
       continue;
     }
 
@@ -478,7 +632,7 @@ function parseTaskTree(
   const title = taskMatch[4].trim();
   const currentIndentLength = getIndentWidth(indent);
 
-  if (isCompletedTask(status) || title.length === 0) {
+  if (title.length === 0) {
     return null;
   }
 
@@ -502,7 +656,7 @@ function parseTaskTree(
         break;
       }
 
-      if (isCompletedTask(candidateTaskMatch[3]) || candidateTaskMatch[4].trim().length === 0) {
+      if (candidateTaskMatch[4].trim().length === 0) {
         nextIndex += 1;
         continue;
       }
@@ -536,6 +690,7 @@ function parseTaskTree(
     task: {
       title,
       note: noteLines.join("\n"),
+      completed: isCompletedTask(status),
       sourcePath,
       sourceLine: startIndex + 1,
       headingPath,
@@ -567,9 +722,9 @@ async function runAppleScript(script: string, args: string[] = []): Promise<void
   });
 }
 
-async function runOmniFocusAppleScript(task: PreparedOmniFocusTask): Promise<void> {
+async function runOmniFocusAppleScript(task: PreparedOmniFocusTask): Promise<string> {
   const script = buildOmniFocusAppleScript(task);
-  await runAppleScript(script);
+  return runAppleScriptCapture(script);
 }
 
 function buildOmniFocusAppleScript(task: PreparedOmniFocusTask): string {
@@ -579,9 +734,95 @@ function buildOmniFocusAppleScript(task: PreparedOmniFocusTask): string {
   ];
 
   appendTaskCreationLines(lines, task, "rootTask", 2, null);
+  lines.push("    return id of rootTask");
   lines.push("  end tell", "end tell");
 
   return lines.join("\n");
+}
+
+async function runAppleScriptCapture(script: string, args: string[] = []): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    execFile("osascript", ["-e", script, "--", ...args], (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(stderr.trim() || stdout.trim() || error.message));
+        return;
+      }
+
+      resolve(stdout.trim());
+    });
+  });
+}
+
+async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatus[]> {
+  if (ids.length === 0) {
+    return [];
+  }
+
+  const script = [
+    "on run argv",
+    "set outputLines to {}",
+    "tell application \"OmniFocus\"",
+    "tell default document",
+    "repeat with taskId in argv",
+    "try",
+    "set matchedTask to first flattened task where its id is (contents of taskId)",
+    "set end of outputLines to ((id of matchedTask as text) & \"|\" & (completed of matchedTask as text))",
+    "on error",
+    "set end of outputLines to ((contents of taskId) & \"|missing\")",
+    "end try",
+    "end repeat",
+    "end tell",
+    "end tell",
+    "set AppleScript's text item delimiters to linefeed",
+    "return outputLines as text",
+    "end run"
+  ].join("\n");
+
+  const output = await runAppleScriptCapture(script, ids);
+  if (!output) {
+    return [];
+  }
+
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const separatorIndex = line.indexOf("|");
+      const id = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
+      const rawStatus = separatorIndex >= 0 ? line.slice(separatorIndex + 1).toLowerCase() : "missing";
+      return {
+        id,
+        completed: rawStatus === "true",
+        missing: rawStatus === "missing"
+      };
+    });
+}
+
+async function setOmniFocusTaskCompletion(taskId: string, completed: boolean): Promise<void> {
+  const script = [
+    "on run argv",
+    "set targetId to item 1 of argv",
+    "set targetCompleted to item 2 of argv",
+    "tell application \"OmniFocus\"",
+    "tell default document",
+    "set matchedTask to first flattened task where its id is targetId",
+    "set completed of matchedTask to (targetCompleted is \"true\")",
+    "end tell",
+    "end tell",
+    "end run"
+  ].join("\n");
+
+  await runAppleScript(script, [taskId, completed ? "true" : "false"]);
+}
+
+function flattenParsedTaskTree(rootTask: ParsedObsidianTask): ParsedObsidianTask[] {
+  const flattenedTasks: ParsedObsidianTask[] = [rootTask];
+  rootTask.children.forEach((child) => {
+    flattenedTasks.push(...flattenParsedTaskTree(child));
+  });
+
+  return flattenedTasks;
 }
 
 function appendTaskCreationLines(
