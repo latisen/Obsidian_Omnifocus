@@ -40,6 +40,7 @@ Pluginet använder dessa kommandon:
 
 - `Sync unfinished tasks to OmniFocus Inbox`
 - `Clear exported task cache`
+- `Reset sync state and export all unfinished tasks`
 - `Sync completed state between Obsidian and OmniFocus`
 - `Test OmniFocus AppleScript bridge`
 
@@ -238,6 +239,24 @@ Sedan testar du tvåvägs completion:
 4. Avmarkera en annan task i OmniFocus (om den var klar) och markera den som klar i Obsidian i stället.
 5. Kör `Sync completed state between Obsidian and OmniFocus` igen.
 6. Bekräfta att OmniFocus uppdateras till klar-status.
+
+## Synkerrors-fil vid skip/fel
+
+Pluginet skapar nu automatiskt en fil i vault-roten när något skippas eller misslyckas i syncen.
+
+- Filnamn: `Synkerrors-<datum>.md`
+- Exempel: `Synkerrors-2026-08-07T12-34-56.789Z.md`
+
+Filen innehåller:
+
+- totalsummering (prepared, created, failed, skipped, duplicates)
+- exakt vilka tasks som skippades eller misslyckades
+- orsak per task
+
+Notera:
+
+- om allt synkar utan skip/fel skapas ingen Synkerrors-fil
+- filens sökväg visas också i sync-notisen i Obsidian
 
 ## Vad du bör rapportera tillbaka efter varje test
 

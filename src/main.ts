@@ -38,8 +38,16 @@ interface DedupeSummary {
   totalPrepared: number;
   uniqueTasks: PreparedOmniFocusTask[];
   duplicateInScanCount: number;
+  duplicateInScanTasks: PreparedOmniFocusTask[];
   alreadyExportedTasks: PreparedOmniFocusTask[];
   pendingExportTasks: PreparedOmniFocusTask[];
+}
+
+interface SyncIssue {
+  title: string;
+  sourcePath: string;
+  sourceLine: number;
+  reason: string;
 }
 
 interface SyncSummary {
@@ -47,6 +55,8 @@ interface SyncSummary {
   createdTasks: PreparedOmniFocusTask[];
   failedTasks: PreparedOmniFocusTask[];
   dryRun: boolean;
+  issueCount: number;
+  issueReportPath?: string;
   errorMessage?: string;
   firstFailureMessage?: string;
 }
@@ -132,6 +142,16 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "reset-sync-state-and-export-all",
+      name: "Reset sync state and export all unfinished tasks",
+      callback: async () => {
+        await this.clearExportedTaskCache();
+        const syncSummary = await this.syncTasksToOmniFocus();
+        new Notice(`Sync cache reset. ${this.createSyncNotice(syncSummary)}`, 12000);
+      }
+    });
+
+    this.addCommand({
       id: "test-omnifocus-applescript-bridge",
       name: "Test OmniFocus AppleScript bridge",
       callback: async () => {
@@ -204,10 +224,12 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const uniqueTasks: PreparedOmniFocusTask[] = [];
     const seenFingerprints = new Set<string>();
     let duplicateInScanCount = 0;
+    const duplicateInScanTasks: PreparedOmniFocusTask[] = [];
 
     for (const task of tasks) {
       if (seenFingerprints.has(task.fingerprint)) {
         duplicateInScanCount += 1;
+        duplicateInScanTasks.push(task);
         continue;
       }
 
@@ -222,6 +244,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       totalPrepared: tasks.length,
       uniqueTasks,
       duplicateInScanCount,
+      duplicateInScanTasks,
       alreadyExportedTasks,
       pendingExportTasks
     };
@@ -231,34 +254,39 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const parsedTasks = await this.collectUnfinishedTasks();
     const preparedTasks = parsedTasks.map((task) => this.prepareTaskForOmniFocus(task));
     const dedupeSummary = this.buildDedupeSummary(preparedTasks);
+    const syncIssues: SyncIssue[] = this.createDedupeSyncIssues(dedupeSummary);
 
     if (this.settings.dryRun) {
-      return {
+      return this.finalizeSyncSummary({
         dedupeSummary,
         createdTasks: [],
         failedTasks: [],
         dryRun: true
-      };
+      }, syncIssues);
     }
 
     const runtimeValidationError = this.validateOmniFocusRuntime();
     if (runtimeValidationError) {
-      return {
+      dedupeSummary.pendingExportTasks.forEach((task) => {
+        syncIssues.push(this.createSyncIssue(task, `Export failed: ${runtimeValidationError}`));
+      });
+
+      return this.finalizeSyncSummary({
         dedupeSummary,
         createdTasks: [],
         failedTasks: dedupeSummary.pendingExportTasks,
         dryRun: false,
         errorMessage: runtimeValidationError
-      };
+      }, syncIssues);
     }
 
     if (dedupeSummary.pendingExportTasks.length === 0) {
-      return {
+      return this.finalizeSyncSummary({
         dedupeSummary,
         createdTasks: [],
         failedTasks: [],
         dryRun: false
-      };
+      }, syncIssues);
     }
 
     const createdTasks: PreparedOmniFocusTask[] = [];
@@ -270,6 +298,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       if (!exported.ok) {
         failedTasks.push(task);
         firstFailureMessage ??= exported.errorMessage;
+        syncIssues.push(this.createSyncIssue(task, `Export failed: ${exported.errorMessage ?? "Unknown AppleScript error."}`));
         continue;
       }
 
@@ -277,13 +306,101 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       createdTasks.push(task);
     }
 
-    return {
+    return this.finalizeSyncSummary({
       dedupeSummary,
       createdTasks,
       failedTasks,
       dryRun: false,
       firstFailureMessage
+    }, syncIssues);
+  }
+
+  createDedupeSyncIssues(dedupeSummary: DedupeSummary): SyncIssue[] {
+    const issues: SyncIssue[] = [];
+
+    dedupeSummary.alreadyExportedTasks.forEach((task) => {
+      issues.push(this.createSyncIssue(task, "Skipped: already exported (fingerprint exists in cache)."));
+    });
+
+    dedupeSummary.duplicateInScanTasks.forEach((task) => {
+      issues.push(this.createSyncIssue(task, "Skipped: duplicate task in this scan (same fingerprint)."));
+    });
+
+    return issues;
+  }
+
+  createSyncIssue(task: PreparedOmniFocusTask, reason: string): SyncIssue {
+    return {
+      title: task.title,
+      sourcePath: task.sourcePath,
+      sourceLine: task.sourceLine,
+      reason
     };
+  }
+
+  async finalizeSyncSummary(
+    baseSummary: Omit<SyncSummary, "issueCount" | "issueReportPath">,
+    syncIssues: SyncIssue[]
+  ): Promise<SyncSummary> {
+    const issueReportPath = await this.writeSyncIssuesReport(baseSummary, syncIssues);
+    return {
+      ...baseSummary,
+      issueCount: syncIssues.length,
+      issueReportPath
+    };
+  }
+
+  async writeSyncIssuesReport(baseSummary: Omit<SyncSummary, "issueCount" | "issueReportPath">, syncIssues: SyncIssue[]): Promise<string | undefined> {
+    if (syncIssues.length === 0) {
+      return undefined;
+    }
+
+    const timestamp = new Date();
+    const displayTimestamp = timestamp.toISOString();
+    const fileName = this.createSyncIssuesFileName(timestamp);
+    const filePath = await this.getAvailableRootFilePath(fileName);
+    const contentLines = [
+      `# Synkerrors ${displayTimestamp}`,
+      "",
+      `- Dry run: ${baseSummary.dryRun ? "yes" : "no"}`,
+      `- Prepared: ${baseSummary.dedupeSummary.totalPrepared}`,
+      `- Created: ${baseSummary.createdTasks.length}`,
+      `- Failed: ${baseSummary.failedTasks.length}`,
+      `- Skipped already exported: ${baseSummary.dedupeSummary.alreadyExportedTasks.length}`,
+      `- Duplicates in scan: ${baseSummary.dedupeSummary.duplicateInScanCount}`,
+      "",
+      "## Tasks skipped or failed",
+      ""
+    ];
+
+    syncIssues.forEach((issue) => {
+      contentLines.push(`- ${issue.sourcePath}:${issue.sourceLine} | ${issue.title} | ${issue.reason}`);
+    });
+
+    await this.app.vault.create(filePath, contentLines.join("\n"));
+    return filePath;
+  }
+
+  createSyncIssuesFileName(timestamp: Date): string {
+    const iso = timestamp.toISOString().replace(/[:]/g, "-");
+    return `Synkerrors-${iso}.md`;
+  }
+
+  async getAvailableRootFilePath(initialPath: string): Promise<string> {
+    if (!this.app.vault.getAbstractFileByPath(initialPath)) {
+      return initialPath;
+    }
+
+    const extensionIndex = initialPath.lastIndexOf(".");
+    const baseName = extensionIndex >= 0 ? initialPath.slice(0, extensionIndex) : initialPath;
+    const extension = extensionIndex >= 0 ? initialPath.slice(extensionIndex) : "";
+
+    let attempt = 2;
+    while (this.app.vault.getAbstractFileByPath(`${baseName}-${attempt}${extension}`)) {
+      attempt += 1;
+    }
+
+    return `${baseName}-${attempt}${extension}`;
   }
 
   async collectUnfinishedTasks(): Promise<ParsedObsidianTask[]> {
@@ -507,24 +624,25 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
   createSyncNotice(summary: SyncSummary): string {
     const { dedupeSummary } = summary;
+    const reportSuffix = summary.issueReportPath ? ` Details file: ${summary.issueReportPath}.` : "";
 
     if (summary.dryRun) {
-      return `Dry run: prepared ${dedupeSummary.totalPrepared} tasks, ${dedupeSummary.pendingExportTasks.length} pending export, ${dedupeSummary.alreadyExportedTasks.length} already recorded, ${dedupeSummary.duplicateInScanCount} duplicate(s) in this scan.`;
+      return `Dry run: prepared ${dedupeSummary.totalPrepared} tasks, ${dedupeSummary.pendingExportTasks.length} pending export, ${dedupeSummary.alreadyExportedTasks.length} already recorded, ${dedupeSummary.duplicateInScanCount} duplicate(s) in this scan.${reportSuffix}`;
     }
 
     if (summary.errorMessage) {
-      return `${summary.errorMessage} Prepared ${dedupeSummary.totalPrepared} tasks, but no export was performed.`;
+      return `${summary.errorMessage} Prepared ${dedupeSummary.totalPrepared} tasks, but no export was performed.${reportSuffix}`;
     }
 
     if (dedupeSummary.pendingExportTasks.length === 0) {
-      return `Sync complete: no new tasks to export. Skipped ${dedupeSummary.alreadyExportedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.`;
+      return `Sync complete: no new tasks to export. Skipped ${dedupeSummary.alreadyExportedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.${reportSuffix}`;
     }
 
     if (summary.failedTasks.length > 0 && summary.firstFailureMessage) {
-      return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}. First error: ${summary.firstFailureMessage}`;
+      return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}. First error: ${summary.firstFailureMessage}${reportSuffix}`;
     }
 
-    return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.`;
+    return `Sync complete: created ${summary.createdTasks.length}, skipped ${dedupeSummary.alreadyExportedTasks.length}, failed ${summary.failedTasks.length}, duplicate(s) in scan ${dedupeSummary.duplicateInScanCount}.${reportSuffix}`;
   }
 
   createExportRecord(task: PreparedOmniFocusTask, omniFocusId?: string): ExportRecord {
