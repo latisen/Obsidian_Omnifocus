@@ -1425,11 +1425,17 @@ function appendTaskCreationLines(
   }
 
   if (task.plannedEpochSeconds !== null) {
-    lines.push(`${indent}set defer date of ${variableName} to ((date "1/1/1970") + ${task.plannedEpochSeconds})`);
+    lines.push(`${indent}set defer date of ${variableName} to (current date)`);
+    lines.push(`${indent}set day of (defer date of ${variableName}) to day of (date "${formatEpochForAppleScriptDate(task.plannedEpochSeconds)}")`);
+    lines.push(`${indent}set month of (defer date of ${variableName}) to month of (date "${formatEpochForAppleScriptDate(task.plannedEpochSeconds)}")`);
+    lines.push(`${indent}set year of (defer date of ${variableName}) to year of (date "${formatEpochForAppleScriptDate(task.plannedEpochSeconds)}")`);
   }
 
   if (task.dueEpochSeconds !== null) {
-    lines.push(`${indent}set due date of ${variableName} to ((date "1/1/1970") + ${task.dueEpochSeconds})`);
+    lines.push(`${indent}set due date of ${variableName} to (current date)`);
+    lines.push(`${indent}set day of (due date of ${variableName}) to day of (date "${formatEpochForAppleScriptDate(task.dueEpochSeconds)}")`);
+    lines.push(`${indent}set month of (due date of ${variableName}) to month of (date "${formatEpochForAppleScriptDate(task.dueEpochSeconds)}")`);
+    lines.push(`${indent}set year of (due date of ${variableName}) to year of (date "${formatEpochForAppleScriptDate(task.dueEpochSeconds)}")`);
   }
 
   task.children.forEach((child, index) => {
@@ -1549,6 +1555,13 @@ function formatEpochForObsidian(epochSeconds: number | null): string | null {
   return `${year}-${month}-${day}T${hour}:${minute}`;
 }
 
+function formatEpochForAppleScriptDate(epochSeconds: number | null): string {
+  const date = new Date((epochSeconds ?? 0) * 1000);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 function normalizeEpochSeconds(value: number | null | undefined): number | null {
   if (!Number.isFinite(value ?? null)) {
     return null;
