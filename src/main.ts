@@ -9,12 +9,16 @@ interface ExportRecord {
   title: string;
   note: string;
   omniFocusId?: string;
+  plannedEpochSeconds?: number | null;
+  dueEpochSeconds?: number | null;
 }
 
 interface ParsedObsidianTask {
   title: string;
   note: string;
   completed: boolean;
+  plannedEpochSeconds: number | null;
+  dueEpochSeconds: number | null;
   sourcePath: string;
   sourceLine: number;
   headingPath: string[];
@@ -25,6 +29,8 @@ interface ParsedObsidianTask {
 interface PreparedOmniFocusTask {
   title: string;
   note: string;
+  plannedEpochSeconds: number | null;
+  dueEpochSeconds: number | null;
   backlinkUrl: string;
   backlinkLabel: string;
   sourcePath: string;
@@ -70,6 +76,8 @@ interface OmniFocusExportResult {
 interface OmniFocusTaskStatus {
   id: string;
   completed: boolean;
+  plannedEpochSeconds: number | null;
+  dueEpochSeconds: number | null;
   missing: boolean;
 }
 
@@ -77,6 +85,9 @@ interface CompletionSyncSummary {
   compared: number;
   updatedInObsidian: number;
   updatedInOmniFocus: number;
+  updatedScheduleInObsidian: number;
+  updatedScheduleInOmniFocus: number;
+  scheduleConflicts: number;
   missingInOmniFocus: number;
   missingInObsidian: number;
   failedUpdates: number;
@@ -398,6 +409,8 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     return {
       title: task.title,
       note,
+      plannedEpochSeconds: task.plannedEpochSeconds,
+      dueEpochSeconds: task.dueEpochSeconds,
       backlinkUrl,
       backlinkLabel,
       sourcePath: task.sourcePath,
@@ -705,6 +718,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         compared: 0,
         updatedInObsidian: 0,
         updatedInOmniFocus: 0,
+        updatedScheduleInObsidian: 0,
+        updatedScheduleInOmniFocus: 0,
+        scheduleConflicts: 0,
         missingInOmniFocus: 0,
         missingInObsidian: 0,
         failedUpdates: 1,
@@ -718,6 +734,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
         compared: 0,
         updatedInObsidian: 0,
         updatedInOmniFocus: 0,
+        updatedScheduleInObsidian: 0,
+        updatedScheduleInOmniFocus: 0,
+        scheduleConflicts: 0,
         missingInOmniFocus: 0,
         missingInObsidian: 0,
         failedUpdates: 0
@@ -731,6 +750,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
 
     let updatedInObsidian = 0;
     let updatedInOmniFocus = 0;
+    let updatedScheduleInObsidian = 0;
+    let updatedScheduleInOmniFocus = 0;
+    let scheduleConflicts = 0;
     let missingInOmniFocus = 0;
     let missingInObsidian = 0;
     let failedUpdates = 0;
@@ -769,12 +791,68 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
           firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update OmniFocus task completion.";
         }
       }
+
+      if (!record.omniFocusId) {
+        continue;
+      }
+
+      const recordPlanned = normalizeEpochSeconds(record.plannedEpochSeconds);
+      const recordDue = normalizeEpochSeconds(record.dueEpochSeconds);
+      const obsidianPlanned = normalizeEpochSeconds(obsidianTask.plannedEpochSeconds);
+      const obsidianDue = normalizeEpochSeconds(obsidianTask.dueEpochSeconds);
+      const omniPlanned = normalizeEpochSeconds(status.plannedEpochSeconds);
+      const omniDue = normalizeEpochSeconds(status.dueEpochSeconds);
+
+      const obsidianChangedFromRecord = !areEpochValuesEqual(obsidianPlanned, recordPlanned) || !areEpochValuesEqual(obsidianDue, recordDue);
+      const omniChangedFromRecord = !areEpochValuesEqual(omniPlanned, recordPlanned) || !areEpochValuesEqual(omniDue, recordDue);
+
+      if (obsidianChangedFromRecord && omniChangedFromRecord) {
+        if (areEpochValuesEqual(obsidianPlanned, omniPlanned) && areEpochValuesEqual(obsidianDue, omniDue)) {
+          record.plannedEpochSeconds = obsidianPlanned;
+          record.dueEpochSeconds = obsidianDue;
+          await this.savePluginData();
+          continue;
+        }
+
+        scheduleConflicts += 1;
+        continue;
+      }
+
+      if (obsidianChangedFromRecord) {
+        try {
+          await setOmniFocusTaskScheduling(record.omniFocusId, obsidianPlanned, obsidianDue);
+          record.plannedEpochSeconds = obsidianPlanned;
+          record.dueEpochSeconds = obsidianDue;
+          await this.savePluginData();
+          updatedScheduleInOmniFocus += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update OmniFocus task schedule.";
+        }
+        continue;
+      }
+
+      if (omniChangedFromRecord) {
+        try {
+          await this.setObsidianTaskScheduling(obsidianTask, omniPlanned, omniDue);
+          record.plannedEpochSeconds = omniPlanned;
+          record.dueEpochSeconds = omniDue;
+          await this.savePluginData();
+          updatedScheduleInObsidian += 1;
+        } catch (error) {
+          failedUpdates += 1;
+          firstFailureMessage ??= error instanceof Error ? error.message : "Failed to update Obsidian task schedule.";
+        }
+      }
     }
 
     return {
       compared: records.length,
       updatedInObsidian,
       updatedInOmniFocus,
+      updatedScheduleInObsidian,
+      updatedScheduleInOmniFocus,
+      scheduleConflicts,
       missingInOmniFocus,
       missingInObsidian,
       failedUpdates,
@@ -817,12 +895,41 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     await this.app.vault.modify(file, lines.join("\n"));
   }
 
-  createCompletionSyncNotice(summary: CompletionSyncSummary): string {
-    if (summary.firstFailureMessage) {
-      return `Completion sync: compared ${summary.compared}, updated Obsidian ${summary.updatedInObsidian}, updated OmniFocus ${summary.updatedInOmniFocus}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}. First error: ${summary.firstFailureMessage}`;
+  async setObsidianTaskScheduling(task: ParsedObsidianTask, plannedEpochSeconds: number | null, dueEpochSeconds: number | null): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(task.sourcePath);
+    if (!(file instanceof TFile)) {
+      throw new Error(`Could not find Obsidian file: ${task.sourcePath}`);
     }
 
-    return `Completion sync: compared ${summary.compared}, updated Obsidian ${summary.updatedInObsidian}, updated OmniFocus ${summary.updatedInOmniFocus}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}.`;
+    const content = await this.app.vault.read(file);
+    const lines = content.split(/\r?\n/);
+    const lineIndex = task.sourceLine - 1;
+
+    if (lineIndex < 0 || lineIndex >= lines.length) {
+      throw new Error(`Invalid source line ${task.sourceLine} for ${task.sourcePath}`);
+    }
+
+    const line = lines[lineIndex];
+    const taskMatch = line.match(TASK_LINE_PATTERN);
+    if (!taskMatch) {
+      throw new Error(`Could not locate task line at ${task.sourcePath}:${task.sourceLine}`);
+    }
+
+    const plannedValue = formatEpochForObsidian(plannedEpochSeconds);
+    const dueValue = formatEpochForObsidian(dueEpochSeconds);
+    let updatedTaskBody = setInlineFieldValue(taskMatch[4], "planned", plannedValue);
+    updatedTaskBody = setInlineFieldValue(updatedTaskBody, "due", dueValue);
+
+    lines[lineIndex] = `${taskMatch[1]}${taskMatch[2]}${updatedTaskBody}`;
+    await this.app.vault.modify(file, lines.join("\n"));
+  }
+
+  createCompletionSyncNotice(summary: CompletionSyncSummary): string {
+    if (summary.firstFailureMessage) {
+      return `Completion sync: compared ${summary.compared}, updated Obsidian completion ${summary.updatedInObsidian}, updated OmniFocus completion ${summary.updatedInOmniFocus}, updated Obsidian schedule ${summary.updatedScheduleInObsidian}, updated OmniFocus schedule ${summary.updatedScheduleInOmniFocus}, schedule conflicts ${summary.scheduleConflicts}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}. First error: ${summary.firstFailureMessage}`;
+    }
+
+    return `Completion sync: compared ${summary.compared}, updated Obsidian completion ${summary.updatedInObsidian}, updated OmniFocus completion ${summary.updatedInOmniFocus}, updated Obsidian schedule ${summary.updatedScheduleInObsidian}, updated OmniFocus schedule ${summary.updatedScheduleInOmniFocus}, schedule conflicts ${summary.scheduleConflicts}, missing OmniFocus ${summary.missingInOmniFocus}, missing Obsidian ${summary.missingInObsidian}, failures ${summary.failedUpdates}.`;
   }
 
   createFullSyncNotice(summary: FullSyncSummary): string {
@@ -862,7 +969,9 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
       sourceLine: task.sourceLine,
       title: task.title,
       note: task.note,
-      omniFocusId
+      omniFocusId,
+      plannedEpochSeconds: task.plannedEpochSeconds,
+      dueEpochSeconds: task.dueEpochSeconds
     };
   }
 
@@ -1013,11 +1122,18 @@ function parseTaskTree(
     noteLines.pop();
   }
 
+  const cleanedTitle = removeInlineDateFields(title);
+  const cleanedNoteLines = noteLines.map((noteLine) => removeInlineDateFields(noteLine));
+  const normalizedPlanned = parseDateTokenToEpochSeconds(extractInlineFieldValue(title, "planned") ?? extractInlineFieldValue(noteLines.join("\n"), "planned"));
+  const normalizedDue = parseDateTokenToEpochSeconds(extractInlineFieldValue(title, "due") ?? extractInlineFieldValue(noteLines.join("\n"), "due"));
+
   return {
     task: {
-      title,
-      note: noteLines.join("\n"),
+      title: cleanedTitle,
+      note: cleanedNoteLines.join("\n"),
       completed: isCompletedTask(status),
+      plannedEpochSeconds: normalizedPlanned,
+      dueEpochSeconds: normalizedDue,
       sourcePath,
       sourceLine: startIndex + 1,
       headingPath,
@@ -1105,9 +1221,19 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     "repeat with taskId in argv",
     "try",
     "set matchedTask to first flattened task where its id is (contents of taskId)",
-    "set end of outputLines to ((id of matchedTask as text) & \"|\" & (completed of matchedTask as text))",
+    "set plannedEpoch to \"\"",
+    "set dueEpoch to \"\"",
+    "set deferDateValue to defer date of matchedTask",
+    "if deferDateValue is not missing value then",
+    "set plannedEpoch to (round (deferDateValue - (date \"1/1/1970\"))) as text",
+    "end if",
+    "set dueDateValue to due date of matchedTask",
+    "if dueDateValue is not missing value then",
+    "set dueEpoch to (round (dueDateValue - (date \"1/1/1970\"))) as text",
+    "end if",
+    "set end of outputLines to ((id of matchedTask as text) & \"|\" & (completed of matchedTask as text) & \"|\" & plannedEpoch & \"|\" & dueEpoch)",
     "on error",
-    "set end of outputLines to ((contents of taskId) & \"|missing\")",
+    "set end of outputLines to ((contents of taskId) & \"|missing||\")",
     "end try",
     "end repeat",
     "end tell",
@@ -1127,13 +1253,14 @@ async function fetchOmniFocusStatuses(ids: string[]): Promise<OmniFocusTaskStatu
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const separatorIndex = line.indexOf("|");
-      const id = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
-      const rawStatus = separatorIndex >= 0 ? line.slice(separatorIndex + 1).toLowerCase() : "missing";
+      const [id, rawStatus, rawPlannedEpoch, rawDueEpoch] = line.split("|");
+      const normalizedStatus = (rawStatus ?? "missing").toLowerCase();
       return {
-        id,
-        completed: rawStatus === "true",
-        missing: rawStatus === "missing"
+        id: id ?? "",
+        completed: normalizedStatus === "true",
+        plannedEpochSeconds: parseEpochSeconds(rawPlannedEpoch),
+        dueEpochSeconds: parseEpochSeconds(rawDueEpoch),
+        missing: normalizedStatus === "missing"
       };
     });
 }
@@ -1200,6 +1327,14 @@ function appendTaskCreationLines(
     lines.push(`${indent}set ${variableName} to make new task with properties ${properties} at end of tasks of ${parentVariableName}`);
   }
 
+  if (task.plannedEpochSeconds !== null) {
+    lines.push(`${indent}set defer date of ${variableName} to ((date "1/1/1970") + ${task.plannedEpochSeconds})`);
+  }
+
+  if (task.dueEpochSeconds !== null) {
+    lines.push(`${indent}set due date of ${variableName} to ((date "1/1/1970") + ${task.dueEpochSeconds})`);
+  }
+
   task.children.forEach((child, index) => {
     appendTaskCreationLines(lines, child, `${variableName}_${index + 1}`, indentLevel, variableName);
   });
@@ -1230,6 +1365,130 @@ function serializeParsedTaskForFingerprint(task: ParsedObsidianTask): string {
     normalizeFingerprintValue(task.headingPath.join(" > ")),
     childSignature
   ].join("::");
+}
+
+function parseEpochSeconds(input: string | undefined): number | null {
+  if (!input) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(input.trim(), 10);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function extractInlineFieldValue(input: string, fieldName: "planned" | "due"): string | null {
+  const pattern = new RegExp(`(?:^|\\s)${fieldName}::([^\\s]+)`, "i");
+  const match = input.match(pattern);
+  return match?.[1]?.trim() ?? null;
+}
+
+function removeInlineDateFields(input: string): string {
+  const withoutPlanned = input.replace(/(^|\s)planned::[^\s]+/gi, "$1");
+  const withoutDue = withoutPlanned.replace(/(^|\s)due::[^\s]+/gi, "$1");
+  return withoutDue.replace(/\s{2,}/g, " ").trim();
+}
+
+function setInlineFieldValue(input: string, fieldName: "planned" | "due", value: string | null): string {
+  const stripped = input.replace(new RegExp(`(^|\\s)${fieldName}::[^\\s]+`, "gi"), "$1").replace(/\s{2,}/g, " ").trim();
+  if (!value) {
+    return stripped;
+  }
+
+  return stripped.length > 0 ? `${stripped} ${fieldName}::${value}` : `${fieldName}::${value}`;
+}
+
+function parseDateTokenToEpochSeconds(token: string | null): number | null {
+  if (!token) {
+    return null;
+  }
+
+  const trimmed = token.trim();
+  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number.parseInt(dateOnlyMatch[1], 10);
+    const month = Number.parseInt(dateOnlyMatch[2], 10) - 1;
+    const day = Number.parseInt(dateOnlyMatch[3], 10);
+    const localDate = new Date(year, month, day, 0, 0, 0, 0);
+    if (Number.isNaN(localDate.getTime())) {
+      return null;
+    }
+
+    return Math.floor(localDate.getTime() / 1000);
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return Math.floor(parsed.getTime() / 1000);
+}
+
+function formatEpochForObsidian(epochSeconds: number | null): string | null {
+  if (!Number.isFinite(epochSeconds ?? null)) {
+    return null;
+  }
+
+  const date = new Date((epochSeconds as number) * 1000);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const second = date.getSeconds();
+
+  if (hour === "00" && minute === "00" && second === 0) {
+    return `${year}-${month}-${day}`;
+  }
+
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function normalizeEpochSeconds(value: number | null | undefined): number | null {
+  if (!Number.isFinite(value ?? null)) {
+    return null;
+  }
+
+  return Math.round(value as number);
+}
+
+function areEpochValuesEqual(left: number | null, right: number | null): boolean {
+  return left === right;
+}
+
+async function setOmniFocusTaskScheduling(taskId: string, plannedEpochSeconds: number | null, dueEpochSeconds: number | null): Promise<void> {
+  const script = [
+    "on run argv",
+    "set targetId to item 1 of argv",
+    "set plannedArg to item 2 of argv",
+    "set dueArg to item 3 of argv",
+    "tell application \"OmniFocus\"",
+    "tell default document",
+    "set matchedTask to first flattened task where its id is targetId",
+    "if plannedArg is \"\" then",
+    "set defer date of matchedTask to missing value",
+    "else",
+    "set defer date of matchedTask to ((date \"1/1/1970\") + (plannedArg as integer))",
+    "end if",
+    "if dueArg is \"\" then",
+    "set due date of matchedTask to missing value",
+    "else",
+    "set due date of matchedTask to ((date \"1/1/1970\") + (dueArg as integer))",
+    "end if",
+    "end tell",
+    "end tell",
+    "end run"
+  ].join("\n");
+
+  await runAppleScript(script, [taskId, plannedEpochSeconds === null ? "" : String(plannedEpochSeconds), dueEpochSeconds === null ? "" : String(dueEpochSeconds)]);
 }
 
 function getIndentWidth(input: string): number {

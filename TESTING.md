@@ -208,6 +208,20 @@ Förväntat resultat i V1:
 - Det innebär att en ny OmniFocus-task kan skapas.
 - Detta är känt och avsiktligt i V1.
 
+### 8. Planned och due från Obsidian till OmniFocus
+
+Fil: `Phase8-Test-08.md`
+
+```md
+- [ ] Skicka statusrapport planned::2026-08-10 due::2026-08-12
+```
+
+Förväntat resultat:
+
+- Exporten sätter `defer date` i OmniFocus till `2026-08-10`.
+- Exporten sätter `due date` i OmniFocus till `2026-08-12`.
+- Taskens titel i OmniFocus ska inte innehålla inline-fälten.
+
 ## Praktiskt testflöde för första körningen
 
 1. Säkerställ att `Dry run` är på.
@@ -247,6 +261,19 @@ Sedan testar du tvåvägs completion:
 4. Avmarkera en annan task i OmniFocus (om den var klar) och markera den som klar i Obsidian i stället.
 5. Kör `Sync completed state between Obsidian and OmniFocus` igen.
 6. Bekräfta att OmniFocus uppdateras till klar-status.
+
+### Extra: test av tvåvägssynk för planned/due
+
+Efter att en task exporterats med OmniFocus-ID:
+
+1. Ändra i Obsidian till exempel `planned::2026-08-15 due::2026-08-20`.
+2. Kör `Sync completed state between Obsidian and OmniFocus`.
+3. Bekräfta att OmniFocus får samma `defer date` och `due date`.
+4. Ändra sedan samma datum direkt i OmniFocus (utan att ändra tasken i Obsidian).
+5. Kör `Sync completed state between Obsidian and OmniFocus` igen.
+6. Bekräfta att `planned::`/`due::` uppdateras på task-raden i Obsidian.
+
+Observera: om både Obsidian och OmniFocus ändrats sedan senaste synk för samma task räknas det som en konflikt och uppdateringen hoppas över för att undvika att skriva över data i fel riktning.
 
 ## Synkerrors-fil vid skip/fel
 
