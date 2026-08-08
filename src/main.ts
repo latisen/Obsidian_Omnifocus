@@ -116,6 +116,7 @@ interface OmniFocusPluginSettings {
   vaultName: string;
   excludedFolders: string;
   dryRun: boolean;
+  enableSyncLog: boolean;
   autoFullSyncIntervalMinutes: number;
   lmStudioBaseUrl: string;
   lmStudioModel: string;
@@ -132,6 +133,7 @@ const DEFAULT_SETTINGS: OmniFocusPluginSettings = {
   vaultName: "",
   excludedFolders: "",
   dryRun: true,
+  enableSyncLog: true,
   autoFullSyncIntervalMinutes: 0,
   lmStudioBaseUrl: "http://127.0.0.1:1234",
   lmStudioModel: "local-model"
@@ -631,7 +633,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
   }
 
   async writeSyncIssuesReport(baseSummary: Omit<SyncSummary, "issueCount" | "issueReportPath">, syncIssues: SyncIssue[]): Promise<string | undefined> {
-    if (syncIssues.length === 0) {
+    if (syncIssues.length === 0 || !this.settings.enableSyncLog) {
       return undefined;
     }
 
@@ -2044,6 +2046,16 @@ class OmniFocusSettingTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.dryRun).onChange(async (value) => {
           this.plugin.settings.dryRun = value;
+          await this.plugin.savePluginData();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Enable sync log")
+      .setDesc("Create a Synkerrors file in the vault root after each sync. Disable to suppress log files.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.enableSyncLog).onChange(async (value) => {
+          this.plugin.settings.enableSyncLog = value;
           await this.plugin.savePluginData();
         });
       });
