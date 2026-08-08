@@ -1196,7 +1196,7 @@ export default class ObsidianOmniFocusPlugin extends Plugin {
     const normalizedProject = normalizeProjectValueForObsidian(projectName);
     const normalizedOmniFocusUrl = normalizeOmniFocusTaskUrlForObsidian(omniFocusTaskUrl);
     let updatedTaskBody = setInlineFieldValue(taskMatch[4], "project", normalizedProject);
-    updatedTaskBody = setInlineFieldValue(updatedTaskBody, "OF", normalizedOmniFocusUrl);
+    updatedTaskBody = setOmniFocusLinkValue(updatedTaskBody, normalizedOmniFocusUrl);
 
     if (updatedTaskBody === taskMatch[4]) {
       return;
@@ -1781,7 +1781,7 @@ function removeInlineDateFields(input: string): string {
   return withoutDue.replace(/\s{2,}/g, " ").trim();
 }
 
-function setInlineFieldValue(input: string, fieldName: "planned" | "due" | "project" | "OF", value: string | null): string {
+function setInlineFieldValue(input: string, fieldName: "planned" | "due" | "project", value: string | null): string {
   const stripped = input
     .replace(new RegExp(`(^|\\s)${fieldName}::(?:\"[^\"]*\"|[^\\s]+)`, "gi"), "$1")
     .replace(/\s{2,}/g, " ")
@@ -1792,6 +1792,21 @@ function setInlineFieldValue(input: string, fieldName: "planned" | "due" | "proj
 
   const encodedValue = /\s/.test(value) ? `"${value.replace(/"/g, "'")}"` : value;
   return stripped.length > 0 ? `${stripped} ${fieldName}::${encodedValue}` : `${fieldName}::${encodedValue}`;
+}
+
+function setOmniFocusLinkValue(input: string, url: string | null): string {
+  const stripped = input
+    .replace(/(^|\s)OF::(?:\"[^\"]*\"|[^\s]+)/gi, "$1")
+    .replace(/\s*\[OF\]\([^\)]+\)/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  if (!url) {
+    return stripped;
+  }
+
+  const link = `[OF](${url})`;
+  return stripped.length > 0 ? `${stripped} ${link}` : link;
 }
 
 function normalizeProjectValueForObsidian(value: string | null): string | null {
