@@ -1778,7 +1778,10 @@ function extractInlineFieldValue(input: string, fieldName: "planned" | "due"): s
 function removeInlineDateFields(input: string): string {
   const withoutPlanned = input.replace(/(^|\s)planned::[^\s]+/gi, "$1");
   const withoutDue = withoutPlanned.replace(/(^|\s)due::[^\s]+/gi, "$1");
-  return withoutDue.replace(/\s{2,}/g, " ").trim();
+  const withoutProject = withoutDue.replace(/(^|\s)project::(?:"[^"]*"|[^\s]+)/gi, "$1");
+  const withoutLegacyOfField = withoutProject.replace(/(^|\s)OF::(?:"[^"]*"|[^\s]+)/gi, "$1");
+  const withoutOfLink = withoutLegacyOfField.replace(/\s*\[OF\]\([^\)]+\)/gi, "");
+  return withoutOfLink.replace(/\s{2,}/g, " ").trim();
 }
 
 function setInlineFieldValue(input: string, fieldName: "planned" | "due" | "project", value: string | null): string {
